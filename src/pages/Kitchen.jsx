@@ -290,6 +290,15 @@ const getWaitMinutes = (order, nowTs) => {
       .filter((l) => l.trim() !== "")
       .join("\n");
   };
+  
+  const formatPrice = (price) => {
+  const value = Number(String(price ?? "0").replace(",", "."));
+
+  return `${value.toLocaleString("de-DE", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} €`;
+};
 
   useEffect(() => {
     const unsub = onValue(ordersRestoran(), (snap) => {
@@ -924,6 +933,45 @@ boxShadow:"0 -20px 50px rgba(0,0,0,.18)"
               Vrijeme narudžbe:{" "}
               {getClockTime(selectedOrder.time)}
             </div>
+			
+			
+			
+			{/* UKUPNO ZA NAPLATU */}
+<div
+  style={{
+    marginTop: 18,
+    marginBottom: 10,
+    padding: 16,
+    borderRadius: 16,
+    background: "#dcfce7",
+    border: "1px solid #86efac",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  }}
+>
+  <span
+    style={{
+      fontSize: 16,
+      fontWeight: 800,
+      color: "#166534",
+    }}
+  >
+    Ukupno za naplatu:
+  </span>
+
+  <span
+    style={{
+      fontSize: 24,
+      fontWeight: 900,
+      color: "#15803d",
+      whiteSpace: "nowrap",
+    }}
+  >
+    {formatPrice(selectedOrder.totalPrice)}
+  </span>
+</div>
 
           <button
   onClick={() => {
