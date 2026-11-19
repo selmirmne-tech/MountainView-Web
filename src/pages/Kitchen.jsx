@@ -291,14 +291,39 @@ const getWaitMinutes = (order, nowTs) => {
       .join("\n");
   };
   
-  const formatPrice = (price) => {
-  const value = Number(String(price ?? "0").replace(",", "."));
+  const parseOrderPrice = (price) => {
+    if (typeof price === "number") {
+      return Number.isFinite(price) && price >= 0 ? price : null;
+    }
 
-  return `${value.toLocaleString("de-DE", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })} €`;
-};
+    let value = String(price ?? "").trim().replace(/[\s€]/g, "");
+    if (!value) return null;
+
+    const comma = value.lastIndexOf(",");
+    const dot = value.lastIndexOf(".");
+    if (comma !== -1 && dot !== -1) {
+      if (comma > dot) {
+        value = value.replace(/\./g, "").replace(",", ".");
+      } else {
+        value = value.replace(/,/g, "");
+      }
+    } else if (comma !== -1) {
+      value = value.replace(",", ".");
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  };
+
+  const formatPrice = (price) => {
+    const value = parseOrderPrice(price);
+    if (value === null) return "Cijena nije zabilježena";
+
+    return `${value.toLocaleString("de-DE", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} €`;
+  };
 
   useEffect(() => {
     const unsub = onValue(ordersRestoran(), (snap) => {
@@ -308,7 +333,13 @@ const getWaitMinutes = (order, nowTs) => {
         const v = c.val();
 
         if (v?.status === "pending") {
-          arr.push(v);
+            arr.push({
+              ...v,
+              orderId: v.orderId || c.key,
+              // Cijena se čita iz istog Firebase zapisa i normalizuje odmah
+              // zajedno sa ostalim poljima narudžbe.
+              displayTotalPrice: parseOrderPrice(v.totalPrice),
+            });
         }
       });
 
@@ -330,6 +361,10 @@ const getWaitMinutes = (order, nowTs) => {
       lastOrdersRef.current = serialized;
 
       setOrders(arr);
+      setSelectedOrder((current) => {
+        if (!current) return current;
+        return arr.find((order) => order.orderId === current.orderId) || current;
+      });
     });
 
     return () => unsub();
@@ -842,6 +877,34 @@ getWaitMinutes(order,now)>20
 >
 ⏱ {getWaitMinutes(order,now)} min čekanja
 </div>
+
+<div
+  style={{
+    marginTop: 14,
+    padding: "12px 14px",
+    borderRadius: 14,
+    border: "1px solid #bbf7d0",
+    background: "#f0fdf4",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+  }}
+>
+  <span style={{ color: "#166534", fontSize: 14, fontWeight: 800 }}>
+    Ukupno:
+  </span>
+  <span
+    style={{
+      color: "#15803d",
+      fontSize: 19,
+      fontWeight: 900,
+      textAlign: "right",
+    }}
+  >
+    {formatPrice(order.displayTotalPrice)}
+  </span>
+</div>
           </div>
         ))}
       </div>
@@ -969,7 +1032,7 @@ boxShadow:"0 -20px 50px rgba(0,0,0,.18)"
       whiteSpace: "nowrap",
     }}
   >
-    {formatPrice(selectedOrder.totalPrice)}
+    {formatPrice(selectedOrder.displayTotalPrice)}
   </span>
 </div>
 
