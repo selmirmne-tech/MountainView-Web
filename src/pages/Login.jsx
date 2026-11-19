@@ -1,21 +1,19 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  signInWithEmailAndPassword,
-  setPersistence,
   browserLocalPersistence,
   createUserWithEmailAndPassword,
+  setPersistence,
+  signInWithEmailAndPassword,
 } from "firebase/auth";
-
-import { usersRestoran } from "../firebase/refs";
-import { child } from "firebase/database";
-import { auth } from "../firebase/config";
-import { get, set, update } from "firebase/database";
+import { child, get, set, update } from "firebase/database";
 import { useNavigate } from "react-router-dom";
 
-
- 
-import { getMessagingSafe } from "../firebase/config";
+import { auth, getMessagingSafe } from "../firebase/config";
+import { usersRestoran } from "../firebase/refs";
 import { getToken } from "firebase/messaging";
+
+const TEST_EMAIL = "test@vasrestoran.com";
+const TEST_PASSWORD = "123456";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -24,124 +22,110 @@ export default function Login() {
   const [ime, setIme] = useState("");
   const [broj, setBroj] = useState("");
   const [titula, setTitula] = useState("Titula");
-
   const [mode, setMode] = useState("login");
 
   const navigate = useNavigate();
+  const autoLoginStarted = useRef(false);
 
-  // =====================================================
-  // FCM TOKEN
-  // =====================================================
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const saveFCMToken = async (uid) => {
+    try {
+      if (
+        typeof Notification === "undefined" ||
+        !("serviceWorker" in navigator)
+      ) {
+        return;
+      }
 
-const saveFCMToken = async (uid) => {
-  try {
-  
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return;
 
-    const permission = await Notification.requestPermission();
-     
+      const registration = await navigator.serviceWorker.ready;
+      const messaging = await getMessagingSafe();
 
-    if (permission !== "granted") return;
+      if (!messaging) return;
 
-     
-    const registration = await navigator.serviceWorker.ready;
-     
+      const token = await getToken(messaging, {
+        vapidKey:
+          "BHe7nSvVdLbYzSKV1boLUgrj35JH5UrvIdP7HRsMn4E1B4nl19IXlDjiLg-OZHnN1_DmFAgfAX2atjsfdEGD-co",
+        serviceWorkerRegistration: registration,
+      });
 
-    const messaging = await getMessagingSafe();
+      if (!token) return;
 
-    if (!messaging) {
-       
-      return;
+      await update(child(usersRestoran(), uid), {
+        fcmToken: token,
+      });
+    } catch (error) {
+      console.error("FCM greška:", error);
     }
+  };
 
-    const token = await getToken(messaging, {
-      vapidKey:
-        "BHe7nSvVdLbYzSKV1boLUgrj35JH5UrvIdP7HRsMn4E1B4nl19IXlDjiLg-OZHnN1_DmFAgfAX2atjsfdEGD-co",
-      serviceWorkerRegistration: registration,
-    });
+  const login = async (
+    emailZaPrijavu = email,
+    lozinkaZaPrijavu = password,
+    tihaPrijava = false
+  ) => {
+    try {
+      const normalizedEmail = emailZaPrijavu.trim();
 
- 
+      if (!normalizedEmail) {
+        if (!tihaPrijava) alert("Unesite email");
+        return;
+      }
 
-    if (!token) return;
+      await setPersistence(auth, browserLocalPersistence);
 
-    await update(child(usersRestoran(), uid), {
-      fcmToken: token,
-       
-    });
+      const userCred = await signInWithEmailAndPassword(
+        auth,
+        normalizedEmail,
+        lozinkaZaPrijavu
+      );
 
-     
-  } catch (e) {
-    console.log("❌ FCM ERROR FULL:", e);
-  }
-};
+      const uid = userCred.user.uid;
+      const snapshot = await get(child(usersRestoran(), uid));
 
-  // =====================================================
-  // LOGIN
-  // =====================================================
- 
- 
- const login = async () => {
-  try {
-    const normalizedEmail = email.trim();
-    if (!normalizedEmail) {
-      alert("Unesite email");
-      return;
+      if (!snapshot.exists()) {
+        if (!tihaPrijava) alert("Korisnik ne postoji u bazi.");
+        return;
+      }
+
+      const fullUser = {
+        ...snapshot.val(),
+        uid,
+      };
+
+      localStorage.setItem("user", JSON.stringify(fullUser));
+      window.dispatchEvent(new Event("user-login"));
+
+      // Token se pokušava sačuvati bez blokiranja prijave.
+      window.setTimeout(() => {
+        void saveFCMToken(uid);
+      }, 500);
+
+      navigate("/dashboard");
+    } catch (error) {
+      console.error("LOGIN ERROR:", error);
+
+      if (!tihaPrijava) {
+        alert("Prijava nije uspjela: " + error.message);
+      } else {
+        console.error("Automatska prijava nije uspjela.");
+      }
     }
+  };
 
-    await setPersistence(auth, browserLocalPersistence);
+  useEffect(() => {
+    if (autoLoginStarted.current) return;
 
-    const userCred = await signInWithEmailAndPassword(
-      auth,
-      normalizedEmail,
-      password
-    );
+    autoLoginStarted.current = true;
+    void login(TEST_EMAIL, TEST_PASSWORD, true);
+  }, [login]);
 
-    const uid = userCred.user.uid;
-
-    const snapshot = await get(child(usersRestoran(), uid));
-
-    if (!snapshot.exists()) {
-      alert("User ne postoji u bazi");
-      return;
-    }
-
-    const fullUser = {
-      ...snapshot.val(),
-      uid,
-    };
-
-    // 1. SAVE USER
-    localStorage.setItem("user", JSON.stringify(fullUser));
-
-    // 2. FORCE STATE UPDATE EVENT
-    window.dispatchEvent(new Event("user-login"));
-
-    // 4. FCM IDE ASYNC (NE BLOKIRA LOGIN)
-    setTimeout(() => {
-      saveFCMToken(uid);
-    }, 500);
-   
-   
-   // 3. NAVIGATE ODMAH
-    navigate("/dashboard");
-
-   
-
-  } catch (error) {
-    console.log("LOGIN ERROR:", error);
-    alert("Login error: " + error.message);
-  }
-};
- 
- 
-
-  // =====================================================
-  // REGISTER
-  // =====================================================
   const register = async () => {
     try {
       const normalizedEmail = email.trim();
-      if (!ime || !normalizedEmail || !password || !broj) {
+
+      if (!ime.trim() || !normalizedEmail || !password || !broj.trim()) {
         alert("Popuni sva polja");
         return;
       }
@@ -159,11 +143,12 @@ const saveFCMToken = async (uid) => {
 
       const uid = userCred.user.uid;
 
+      // Lozinka se ne čuva u Realtime Database; Firebase Auth je čuva.
       const newUser = {
-        ime,
+        uid,
+        ime: ime.trim(),
         email: normalizedEmail,
-        broj,
-        password,
+        broj: broj.trim(),
         titula,
         fcmToken: "",
       };
@@ -171,26 +156,23 @@ const saveFCMToken = async (uid) => {
       await set(child(usersRestoran(), uid), newUser);
 
       localStorage.setItem("user", JSON.stringify(newUser));
-      window.dispatchEvent(new Event("storage"));
+      window.dispatchEvent(new Event("user-login"));
 
       navigate("/dashboard");
     } catch (error) {
-      alert("Register error: " + error.message);
+      console.error("REGISTER ERROR:", error);
+      alert("Registracija nije uspjela: " + error.message);
     }
   };
 
-  // =====================================================
-  // UI
-  // =====================================================
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-black to-neutral-900 px-4">
-      <div className="w-full max-w-md bg-neutral-900 rounded-3xl p-6 border border-neutral-800 shadow-xl">
-
-        {/* SWITCH */}
-        <div className="flex mb-6 gap-2">
+      <div className="w-full max-w-md rounded-3xl border border-neutral-800 bg-neutral-900 p-6 shadow-xl">
+        <div className="mb-6 flex gap-2">
           <button
+            type="button"
             onClick={() => setMode("login")}
-            className={`flex-1 py-3 rounded-2xl font-semibold transition ${
+            className={`flex-1 rounded-2xl py-3 font-semibold transition ${
               mode === "login"
                 ? "bg-orange-500 text-black"
                 : "bg-neutral-800 text-white"
@@ -200,8 +182,9 @@ const saveFCMToken = async (uid) => {
           </button>
 
           <button
+            type="button"
             onClick={() => setMode("register")}
-            className={`flex-1 py-3 rounded-2xl font-semibold transition ${
+            className={`flex-1 rounded-2xl py-3 font-semibold transition ${
               mode === "register"
                 ? "bg-orange-500 text-black"
                 : "bg-neutral-800 text-white"
@@ -211,67 +194,78 @@ const saveFCMToken = async (uid) => {
           </button>
         </div>
 
-        {/* LOGIN */}
         {mode === "login" && (
           <div className="space-y-4">
             <input
               type="email"
               autoComplete="username"
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-orange-500"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
               placeholder="Email"
-              onChange={(e) => setEmail(e.target.value)}
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-orange-500"
             />
 
             <input
               type="password"
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-orange-500"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               placeholder="Password"
-              onChange={(e) => setPassword(e.target.value)}
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-orange-500"
             />
 
             <button
-              onClick={login}
-              className="w-full py-4 rounded-2xl bg-orange-500 text-black font-bold active:scale-[0.98] transition"
+              type="button"
+              onClick={() => void login()}
+              className="w-full rounded-2xl bg-orange-500 py-4 font-bold text-black transition active:scale-[0.98]"
             >
               LOGIN
             </button>
           </div>
         )}
 
-        {/* REGISTER */}
         {mode === "register" && (
           <div className="space-y-4">
             <input
+              type="text"
+              autoComplete="name"
+              value={ime}
+              onChange={(event) => setIme(event.target.value)}
+              placeholder="Ime i prezime"
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-green-500"
+            />
+
+            <input
+              type="tel"
+              autoComplete="tel"
+              value={broj}
+              onChange={(event) => setBroj(event.target.value)}
+              placeholder="Broj telefona"
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-green-500"
+            />
+
+            <input
               type="email"
               autoComplete="email"
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="Ime i prezime"
-              onChange={(e) => setIme(e.target.value)}
-            />
-
-            <input
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-green-500"
-              placeholder="Broj telefona"
-              onChange={(e) => setBroj(e.target.value)}
-            />
-
-            <input
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-green-500"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
               placeholder="Email"
-              onChange={(e) => setEmail(e.target.value)}
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-green-500"
             />
 
             <input
               type="password"
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-green-500"
+              autoComplete="new-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
               placeholder="Password"
-              onChange={(e) => setPassword(e.target.value)}
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-green-500"
             />
 
             <select
-              className="w-full p-4 rounded-2xl bg-neutral-800 text-white outline-none focus:ring-2 focus:ring-green-500"
               value={titula}
-              onChange={(e) => setTitula(e.target.value)}
+              onChange={(event) => setTitula(event.target.value)}
+              className="w-full rounded-2xl bg-neutral-800 p-4 text-white outline-none focus:ring-2 focus:ring-green-500"
             >
               <option value="Titula">Izaberi titulu</option>
               <option value="Konobar">Konobar</option>
@@ -279,14 +273,14 @@ const saveFCMToken = async (uid) => {
             </select>
 
             <button
-              onClick={register}
-              className="w-full py-4 rounded-2xl bg-green-500 text-black font-bold active:scale-[0.98] transition"
+              type="button"
+              onClick={() => void register()}
+              className="w-full rounded-2xl bg-green-500 py-4 font-bold text-black transition active:scale-[0.98]"
             >
               REGISTER
             </button>
           </div>
         )}
-
       </div>
     </div>
   );
