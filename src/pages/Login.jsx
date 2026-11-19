@@ -1,24 +1,24 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   browserLocalPersistence,
   createUserWithEmailAndPassword,
+  inMemoryPersistence,
   setPersistence,
   signInWithEmailAndPassword,
 } from "firebase/auth";
 import { child, get, set, update } from "firebase/database";
+import { getToken } from "firebase/messaging";
 import { useNavigate } from "react-router-dom";
 
 import { auth, getMessagingSafe } from "../firebase/config";
 import { usersRestoran } from "../firebase/refs";
-import { getToken } from "firebase/messaging";
 
-const TEST_EMAIL = "test@vasrestoran.com";
-const TEST_PASSWORD = "123456";
+const AUTO_LOGIN_EMAIL = "test@vasrestoran.com";
+const AUTO_LOGIN_PASSWORD = "123456";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-
   const [ime, setIme] = useState("");
   const [broj, setBroj] = useState("");
   const [titula, setTitula] = useState("Titula");
@@ -27,20 +27,43 @@ export default function Login() {
   const navigate = useNavigate();
   const autoLoginStarted = useRef(false);
 
-  const saveFCMToken = async (uid) => {
+  const requestNotificationPermission = useCallback(async () => {
     try {
       if (
-        typeof Notification === "undefined" ||
+        typeof window === "undefined" ||
+        !("Notification" in window) ||
+        !window.isSecureContext
+      ) {
+        return "unsupported";
+      }
+
+      if (Notification.permission === "default") {
+        return await Notification.requestPermission();
+      }
+
+      return Notification.permission;
+    } catch (error) {
+      console.info("Obavještenja nisu dostupna u ovom browseru:", error);
+      return "unsupported";
+    }
+  }, []);
+
+  const saveFCMToken = useCallback(async (uid) => {
+    try {
+      if (
+        typeof window === "undefined" ||
+        !("Notification" in window) ||
+        Notification.permission !== "granted" ||
+        !window.isSecureContext ||
         !("serviceWorker" in navigator)
       ) {
         return;
       }
 
-      const permission = await Notification.requestPermission();
-      if (permission !== "granted") return;
-
-      const registration = await navigator.serviceWorker.ready;
-      const messaging = await getMessagingSafe();
+      const [registration, messaging] = await Promise.all([
+        navigator.serviceWorker.ready,
+        getMessagingSafe(),
+      ]);
 
       if (!messaging) return;
 
@@ -52,79 +75,81 @@ export default function Login() {
 
       if (!token) return;
 
-      await update(child(usersRestoran(), uid), {
-        fcmToken: token,
-      });
+      await update(child(usersRestoran(), uid), { fcmToken: token });
     } catch (error) {
-      console.error("FCM greška:", error);
+      // FCM nije potreban za prijavu; neki ugrađeni browseri ga ne podržavaju.
+      console.info("FCM token nije sačuvan:", error);
     }
-  };
+  }, []);
 
-  const login = async (
-    emailZaPrijavu = email,
-    lozinkaZaPrijavu = password,
-    tihaPrijava = false
-  ) => {
-    try {
-      const normalizedEmail = emailZaPrijavu.trim();
+  const login = useCallback(
+    async (emailToUse = email, passwordToUse = password, silent = false) => {
+      try {
+        const normalizedEmail = emailToUse.trim();
+        if (!normalizedEmail) {
+          if (!silent) alert("Unesite email");
+          return;
+        }
 
-      if (!normalizedEmail) {
-        if (!tihaPrijava) alert("Unesite email");
-        return;
+        // Poziv je prije prvog await-a kod ručne prijave, pa browser može
+        // prikazati dozvolu nakon korisnikovog klika. Automatska prijava je ne traži.
+        const notificationPermission = silent
+          ? Promise.resolve(
+              typeof window !== "undefined" && "Notification" in window
+                ? Notification.permission
+                : "unsupported"
+            )
+          : requestNotificationPermission();
+
+        try {
+          await setPersistence(auth, browserLocalPersistence);
+        } catch (persistenceError) {
+          // Ako Instagram/in-app browser blokira localStorage, prijava i dalje
+          // može trajati do zatvaranja browser sesije.
+          console.info("Local persistence nije dostupna; koristim memorijsku sesiju.", persistenceError);
+          await setPersistence(auth, inMemoryPersistence);
+        }
+
+        const userCred = await signInWithEmailAndPassword(
+          auth,
+          normalizedEmail,
+          passwordToUse
+        );
+        const uid = userCred.user.uid;
+        const snapshot = await get(child(usersRestoran(), uid));
+
+        if (!snapshot.exists()) {
+          if (!silent) alert("Korisnik ne postoji u bazi.");
+          return;
+        }
+
+        const fullUser = { ...snapshot.val(), uid };
+        localStorage.setItem("user", JSON.stringify(fullUser));
+        window.dispatchEvent(new Event("user-login"));
+        navigate("/dashboard");
+
+        // Token se čuva naknadno i nikada ne blokira prijavu.
+        void notificationPermission.then((permission) => {
+          if (permission === "granted") return saveFCMToken(uid);
+          return undefined;
+        });
+      } catch (error) {
+        console.error(silent ? "Automatska prijava nije uspjela:" : "LOGIN ERROR:", error);
+        if (!silent) alert("Prijava nije uspjela: " + error.message);
       }
-
-      await setPersistence(auth, browserLocalPersistence);
-
-      const userCred = await signInWithEmailAndPassword(
-        auth,
-        normalizedEmail,
-        lozinkaZaPrijavu
-      );
-
-      const uid = userCred.user.uid;
-      const snapshot = await get(child(usersRestoran(), uid));
-
-      if (!snapshot.exists()) {
-        if (!tihaPrijava) alert("Korisnik ne postoji u bazi.");
-        return;
-      }
-
-      const fullUser = {
-        ...snapshot.val(),
-        uid,
-      };
-
-      localStorage.setItem("user", JSON.stringify(fullUser));
-      window.dispatchEvent(new Event("user-login"));
-
-      // Token se pokušava sačuvati bez blokiranja prijave.
-      window.setTimeout(() => {
-        void saveFCMToken(uid);
-      }, 500);
-
-      navigate("/dashboard");
-    } catch (error) {
-      console.error("LOGIN ERROR:", error);
-
-      if (!tihaPrijava) {
-        alert("Prijava nije uspjela: " + error.message);
-      } else {
-        console.error("Automatska prijava nije uspjela.");
-      }
-    }
-  };
+    },
+    [email, password, navigate, requestNotificationPermission, saveFCMToken]
+  );
 
   useEffect(() => {
     if (autoLoginStarted.current) return;
-
     autoLoginStarted.current = true;
-    void login(TEST_EMAIL, TEST_PASSWORD, true);
+    void login(AUTO_LOGIN_EMAIL, AUTO_LOGIN_PASSWORD, true);
   }, [login]);
 
   const register = async () => {
     try {
       const normalizedEmail = email.trim();
-
       if (!ime.trim() || !normalizedEmail || !password || !broj.trim()) {
         alert("Popuni sva polja");
         return;
@@ -140,10 +165,9 @@ export default function Login() {
         normalizedEmail,
         password
       );
-
       const uid = userCred.user.uid;
 
-      // Lozinka se ne čuva u Realtime Database; Firebase Auth je čuva.
+      // Lozinka se čuva u Firebase Authenticationu, ne u Realtime Database.
       const newUser = {
         uid,
         ime: ime.trim(),
@@ -154,10 +178,8 @@ export default function Login() {
       };
 
       await set(child(usersRestoran(), uid), newUser);
-
       localStorage.setItem("user", JSON.stringify(newUser));
       window.dispatchEvent(new Event("user-login"));
-
       navigate("/dashboard");
     } catch (error) {
       console.error("REGISTER ERROR:", error);

@@ -230,12 +230,6 @@ useEffect(() => {
   };
 }, []);
 
-  useEffect(() => {
-    Notification.requestPermission().then((permission) => {
-      console.log("Permission:", permission);
-    });
-  }, []);
-
   return (
     <BrowserRouter>
       <DashboardBackGuard />
