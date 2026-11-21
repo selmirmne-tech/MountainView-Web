@@ -327,6 +327,13 @@ const categories = useMemo(()=>[
 
 const activeMenu = useMemo(() => menu.filter((item) => item.menuType === menuType), [menu, menuType]);
 
+const selectMenuType = (type) => {
+  setMenuType(type);
+  setCategory("All");
+  if (categoryRef.current) categoryRef.current.scrollLeft = 0;
+  window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+};
+
 
   const filteredMenu =
 
@@ -821,7 +828,7 @@ pb-40
     {[{ type: "food", label: "HRANA" }, { type: "drinks", label: "PIĆE" }].map((option) => <button
       key={option.type}
       type="button"
-      onClick={() => { setMenuType(option.type); setCategory("All"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+      onClick={() => selectMenuType(option.type)}
       className={`flex-1 rounded-xl border px-4 py-2 text-sm font-bold tracking-wide ${menuType === option.type ? "border-orange-500 bg-orange-500 text-black" : "border-neutral-700 bg-neutral-900 text-white"}`}
       aria-pressed={menuType === option.type}
     >{option.label}</button>)}
