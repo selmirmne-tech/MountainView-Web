@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { child, get, onValue, push, set, remove} from "firebase/database";
 import { menuRestoran, ordersRestoran } from "../firebase/refs";
@@ -29,6 +29,7 @@ export default function Naruci() {
 const navigate = useNavigate();
   const [menu, setMenu] = useState([]);
   const [menuType, setMenuType] = useState("food");
+  const [menuTypeScrollReset, setMenuTypeScrollReset] = useState(0);
   const [loading, setLoading] = useState(true);
 
   // samo selekcija artikala
@@ -52,6 +53,7 @@ const [ordered, setOrdered] = useState(false);
 
 
 const categoryRef = useRef(null);
+const resetMenuTypeScrollRef = useRef(false);
 const cartHistoryOpenRef = useRef(false);
 const allMenuRef = useRef([]);
 const displayFlagsRef = useRef({ food: true, drinks: true });
@@ -327,11 +329,28 @@ const categories = useMemo(()=>[
 
 const activeMenu = useMemo(() => menu.filter((item) => item.menuType === menuType), [menu, menuType]);
 
+useLayoutEffect(() => {
+  if (!resetMenuTypeScrollRef.current) return;
+  resetMenuTypeScrollRef.current = false;
+
+  const frame = window.requestAnimationFrame(() => {
+    const categoriesBar = categoryRef.current;
+    if (categoriesBar) {
+      categoriesBar.scrollTo({ left: 0, behavior: "auto" });
+      categoriesBar.parentElement?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
+    document.scrollingElement?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+  });
+
+  return () => window.cancelAnimationFrame(frame);
+}, [menuType, menuTypeScrollReset]);
+
 const selectMenuType = (type) => {
+  resetMenuTypeScrollRef.current = true;
+  setMenuTypeScrollReset((value) => value + 1);
   setMenuType(type);
   setCategory("All");
-  if (categoryRef.current) categoryRef.current.scrollLeft = 0;
-  window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
 };
 
 
