@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { onValue, update } from "firebase/database";
+import { child, get, limitToFirst, onValue, orderByKey, query, update } from "firebase/database";
+import { Utensils, Wine } from "lucide-react";
 import { menuRestoran } from "../firebase/refs";
+import * as N from "../firebase/nodes";
 import { sentenceCase } from "./animationText";
 
 const styles = {
@@ -17,9 +19,12 @@ const legacyDateValue = (date) => {
   return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])).getTime() : 0;
 };
 
-function readMenu(menu) {
-  if (menu?.Podaci && typeof menu.Podaci === "object") {
-    return { items: menu.Podaci, createAt: String(menu.createAt || ""), flat: true };
+function readMenu(menu, dataNode) {
+  if (menu?.[dataNode] && typeof menu[dataNode] === "object") {
+    return { items: menu[dataNode], createAt: String(menu.createAt || ""), flat: true };
+  }
+  if (dataNode !== "Podaci") {
+    return { items: {}, createAt: String(menu?.createAt || ""), flat: true };
   }
   const dated = Object.entries(menu || {})
     .filter(([key, value]) => key !== "createAt" && key !== "createAtMillis" && value?.Podaci)
@@ -59,6 +64,18 @@ export default function Admin() {
     catch { return null; }
   }, []);
   const [entries, setEntries] = useState([]);
+  const [menuType, setMenuType] = useState("food");
+  const [menuAvailability, setMenuAvailability] = useState({ food: false, drinks: false });
+  const [menuAvailabilityResolved, setMenuAvailabilityResolved] = useState({ food: false, drinks: false });
+  const [menuShowSettingsResolved, setMenuShowSettingsResolved] = useState({ food: false, drinks: false });
+  const [showHrana, setShowHrana] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("restoran_menu_display") || "null")?.food ?? null; }
+    catch { return null; }
+  });
+  const [showPice, setShowPice] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("restoran_menu_display") || "null")?.drinks ?? null; }
+    catch { return null; }
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -74,6 +91,9 @@ export default function Admin() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [successText, setSuccessText] = useState("");
   const [menuCreateAt, setMenuCreateAt] = useState("");
+  const menuDataNode = menuType === "drinks" ? "Podaci1" : "Podaci";
+  const menuDataNodeRef = useRef(menuDataNode);
+  const menuVersionForWritesRef = useRef(0);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
   const entriesRef = useRef([]);
@@ -82,6 +102,7 @@ export default function Admin() {
   dirtyRef.current = dirty;
   savingRef.current = saving;
   entriesRef.current = entries;
+  menuDataNodeRef.current = menuDataNode;
 
   const hasPendingChanges = (items) => items.some((item) => {
     const original = originalEntriesRef.current[item.id];
@@ -123,18 +144,28 @@ export default function Admin() {
 
   useEffect(() => {
     let mounted = true;
-    const unsubscribe = onValue(menuRestoran(), (snapshot) => {
-      if (!mounted) return;
-      if (savingRef.current) return;
-      const menu = readMenu(snapshot.exists() ? snapshot.val() : {});
-      const remoteItems = Object.entries(menu.items).map(([id, item]) => newEntry(id, item));
+    const menuRef = menuRestoran();
+    const cacheKey = `admin-menu-cache:${N.ROOT_RESTORAN}:${menuDataNode}`;
+    let cached = null;
+    let currentCreateAt = "";
+    let lastRequestedVersion = null;
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        cached = JSON.parse(raw);
+        currentCreateAt = String(cached?.createAt || "");
+      }
+    } catch { cached = null; }
+
+    const showMenu = (menu, version, createAt, saveCache) => {
+      if (!mounted || savingRef.current) return;
+      const remoteItems = Object.entries(menu.items || {}).map(([id, item]) => newEntry(id, item));
       const remoteOriginals = Object.fromEntries(remoteItems.map((item) => [item.id, item]));
-      const items = dirtyRef.current
-        ? rebaseUnsavedEntries(remoteItems)
-        : remoteItems;
+      const items = dirtyRef.current ? rebaseUnsavedEntries(remoteItems) : remoteItems;
       originalEntriesRef.current = remoteOriginals;
       flatMenuRef.current = menu.flat;
-      setMenuCreateAt(menu.createAt);
+      if (createAt) currentCreateAt = createAt;
+      setMenuCreateAt(createAt || currentCreateAt || "");
       entriesRef.current = items;
       setEntries(items);
       const changed = hasPendingChanges(items);
@@ -142,15 +173,193 @@ export default function Admin() {
       setDirty(changed);
       setMessage("");
       setLoading(false);
-    }, (error) => {
+      if (saveCache) {
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({
+            version,
+            createAt: createAt || "",
+            items: menu.items || {},
+            flat: menu.flat,
+          }));
+        } catch { /* Storage may be disabled or full; Firebase remains authoritative. */ }
+      }
+    };
+
+    if (cached && cached.items && typeof cached.items === "object") {
+      showMenu({ items: cached.items, flat: cached.flat !== false }, cached.version, cached.createAt, false);
+    }
+
+    const fetchCurrentMenu = async (version, createAt) => {
+      if (!mounted || savingRef.current) return;
+      const versionKey = String(version || createAt || "0");
+      const numericVersion = Number(versionKey);
+      if (Number.isFinite(numericVersion)) menuVersionForWritesRef.current = Math.max(menuVersionForWritesRef.current, numericVersion);
+      if (cached && String(cached.version || cached.createAt || "0") === versionKey) return;
+      if (lastRequestedVersion === versionKey) return;
+      lastRequestedVersion = versionKey;
+      try {
+        const dataSnapshot = await get(child(menuRef, menuDataNode));
+        if (!mounted) return;
+        let parsed;
+        if (dataSnapshot.exists()) {
+          parsed = { items: dataSnapshot.val() || {}, flat: true };
+        } else if (menuDataNode === N.MENU_PODACI) {
+          const fullSnapshot = await get(menuRef); // legacy dated menus only
+          if (!mounted) return;
+          parsed = readMenu(fullSnapshot.exists() ? fullSnapshot.val() : {}, menuDataNode);
+        } else {
+          parsed = { items: {}, flat: true };
+        }
+        cached = { version: version || createAt || "0", createAt, items: parsed.items, flat: parsed.flat };
+        showMenu(parsed, cached.version, createAt || parsed.createAt, true);
+      } catch (error) {
+        if (!mounted) return;
+        setMessage(`Ne mogu učitati meni: ${error.message}`);
+        setLoading(false);
+      }
+    };
+
+    let unsubscribeMetadata = () => {};
+    let unsubscribeDate = () => {};
+    get(child(menuRef, N.MENU_CREATE_AT_MILLIS)).then((initialVersion) => {
       if (!mounted) return;
-      setMessage(`Ne mogu učitati meni: ${error.message}`);
+      if (Number(initialVersion.val()) > 0) {
+        // createAt is separate metadata: watch it for display, not for menu downloads.
+        unsubscribeDate = onValue(child(menuRef, N.MENU_CREATE_AT), (snapshot) => {
+          currentCreateAt = String(snapshot.val() || "");
+          setMenuCreateAt(currentCreateAt);
+        });
+        unsubscribeMetadata = onValue(child(menuRef, N.MENU_CREATE_AT_MILLIS), (snapshot) => {
+          const version = Number(snapshot.val()) || 0;
+          if (version) fetchCurrentMenu(String(version), currentCreateAt);
+        }, (error) => {
+          if (!mounted) return;
+          setMessage(`Ne mogu provjeriti verziju menija: ${error.message}`);
+          setLoading(false);
+        });
+      } else {
+        // Older menu data may only have createAt; watch that small metadata field.
+        unsubscribeMetadata = onValue(child(menuRef, N.MENU_CREATE_AT), (snapshot) => {
+          currentCreateAt = String(snapshot.val() || "");
+          setMenuCreateAt(currentCreateAt);
+          fetchCurrentMenu(currentCreateAt || "0", currentCreateAt);
+        }, (error) => {
+          if (!mounted) return;
+          setMessage(`Ne mogu provjeriti verziju menija: ${error.message}`);
+          setLoading(false);
+        });
+      }
+    }).catch((error) => {
+      if (!mounted) return;
+      setMessage(`Ne mogu provjeriti verziju menija: ${error.message}`);
       setLoading(false);
     });
     return () => {
       mounted = false;
-      unsubscribe();
+      unsubscribeMetadata();
+      unsubscribeDate();
     };
+  }, [menuDataNode]);
+
+  useEffect(() => {
+    let mounted = true;
+    const previousAvailability = { food: false, drinks: false };
+    const menuRef = menuRestoran();
+    const listenForMenu = (type, node) => onValue(
+      query(child(menuRef, node), orderByKey(), limitToFirst(1)),
+      (snapshot) => {
+        if (!mounted) return;
+        const exists = snapshot.exists();
+        const wasAvailable = previousAvailability[type];
+        previousAvailability[type] = exists;
+        setMenuAvailabilityResolved((current) => current[type] ? current : { ...current, [type]: true });
+        setMenuAvailability((current) => current[type] === exists
+          ? current
+          : { ...current, [type]: exists });
+
+        const cacheKey = `admin-menu-cache:${N.ROOT_RESTORAN}:${node}`;
+        if (!exists) {
+          try {
+            const raw = localStorage.getItem(cacheKey);
+            const cached = raw ? JSON.parse(raw) : {};
+            localStorage.setItem(cacheKey, JSON.stringify({
+              ...cached, items: {}, flat: true,
+            }));
+          } catch { /* Keep the editor usable if local storage is unavailable. */ }
+          if (menuDataNodeRef.current === node && !dirtyRef.current) {
+            entriesRef.current = [];
+            originalEntriesRef.current = {};
+            setEntries([]);
+            setDirty(false);
+            dirtyRef.current = false;
+            setMenuCreateAt("");
+            setLoading(false);
+          }
+          return;
+        }
+
+        if (!wasAvailable && menuDataNodeRef.current === node
+            && entriesRef.current.length === 0 && !dirtyRef.current && !savingRef.current) {
+          get(child(menuRef, node)).then((dataSnapshot) => {
+            if (!mounted || !dataSnapshot.exists() || menuDataNodeRef.current !== node) return;
+            const remoteItems = Object.entries(dataSnapshot.val() || {}).map(([id, item]) => newEntry(id, item));
+            originalEntriesRef.current = Object.fromEntries(remoteItems.map((item) => [item.id, item]));
+            entriesRef.current = remoteItems;
+            flatMenuRef.current = true;
+            setEntries(remoteItems);
+            setMessage("");
+            setLoading(false);
+            try {
+              const cacheKey = `admin-menu-cache:${N.ROOT_RESTORAN}:${node}`;
+              const previous = JSON.parse(localStorage.getItem(cacheKey) || "{}");
+              const items = Object.fromEntries(remoteItems.map((item) => [item.id, {
+                name: item.name,
+                category: item.category,
+                description: item.description,
+                price: parsePrice(item.price),
+              }]));
+              localStorage.setItem(cacheKey, JSON.stringify({
+                ...previous, items, flat: true,
+              }));
+            } catch { /* Cache is optional. */ }
+          }).catch((error) => {
+            if (mounted) setMessage(`Ne mogu učitati meni: ${error.message}`);
+          });
+        }
+      },
+      (error) => {
+        setMenuAvailabilityResolved((current) => current[type] ? current : { ...current, [type]: true });
+        if (mounted) setMessage(`Ne mogu provjeriti dostupnost menija: ${error.message}`);
+      },
+    );
+
+    const unsubscribeFood = listenForMenu("food", N.MENU_PODACI);
+    const unsubscribeDrinks = listenForMenu("drinks", "Podaci1");
+    return () => {
+      mounted = false;
+      unsubscribeFood();
+      unsubscribeDrinks();
+    };
+  }, []);
+
+  useEffect(() => {
+    const showFoodRef = child(menuRestoran(), N.MENU_SHOW_FOOD);
+    const showDrinksRef = child(menuRestoran(), N.MENU_SHOW_DRINKS);
+    const unsubscribeFood = onValue(showFoodRef, (snapshot) => {
+      setShowHrana(typeof snapshot.val() === "boolean" ? snapshot.val() : null);
+      setMenuShowSettingsResolved((current) => current.food ? current : { ...current, food: true });
+    }, (error) => {
+      setMenuShowSettingsResolved((current) => current.food ? current : { ...current, food: true });
+      setMessage(`Ne mogu učitati postavku prikaza hrane: ${error.message}`);
+    });
+    const unsubscribeDrinks = onValue(showDrinksRef, (snapshot) => {
+      setShowPice(typeof snapshot.val() === "boolean" ? snapshot.val() : null);
+      setMenuShowSettingsResolved((current) => current.drinks ? current : { ...current, drinks: true });
+    }, (error) => {
+      setMenuShowSettingsResolved((current) => current.drinks ? current : { ...current, drinks: true });
+      setMessage(`Ne mogu učitati postavku prikaza pića: ${error.message}`);
+    });
+    return () => { unsubscribeFood(); unsubscribeDrinks(); };
   }, []);
 
   const rebaseUnsavedEntries = (remoteItems) => {
@@ -197,6 +406,58 @@ export default function Admin() {
   const visible = entries.filter((item) => !item.deleted
     && (activeCategory === "Sve" || item.category === activeCategory)
     && `${item.name} ${item.category} ${item.description}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
+
+  const selectMenuType = (type) => {
+    if (type === menuType || loading || saving) return;
+    if (dirty) {
+      setMessage("Sačuvaj izmjene prije promjene menija.");
+      return;
+    }
+    setMenuType(type);
+    setSelectedCategory("Sve");
+    setFilter("");
+    setEntries([]);
+    entriesRef.current = [];
+    originalEntriesRef.current = {};
+    setMenuCreateAt("");
+    setMessage("");
+    setLoading(true);
+  };
+
+  const setOrderingVisibility = async (type, value) => {
+    const isFood = type === "food";
+    const previous = isFood ? showHrana : showPice;
+    if (isFood) setShowHrana(value); else setShowPice(value);
+    const nextDisplay = {
+      food: isFood ? value : (showHrana ?? menuAvailability.food),
+      drinks: isFood ? (showPice ?? menuAvailability.drinks) : value,
+    };
+    try { localStorage.setItem("restoran_menu_display", JSON.stringify(nextDisplay)); }
+    catch { /* Local storage is optional. */ }
+    const updates = {
+      [N.MENU_SHOW_FOOD]: nextDisplay.food,
+      [N.MENU_SHOW_DRINKS]: nextDisplay.drinks,
+    };
+    try {
+      await update(menuRestoran(), updates);
+      setMessage("");
+    } catch (error) {
+      if (isFood) setShowHrana(previous); else setShowPice(previous);
+      try {
+        localStorage.setItem("restoran_menu_display", JSON.stringify({
+          food: isFood ? (previous ?? menuAvailability.food) : (showHrana ?? menuAvailability.food),
+          drinks: isFood ? (showPice ?? menuAvailability.drinks) : (previous ?? menuAvailability.drinks),
+        }));
+      } catch { /* Local storage is optional. */ }
+      setMessage(`Ne mogu sačuvati postavku menija: ${error.message}`);
+    }
+  };
+
+  useEffect(() => {
+    if (loading || saving || dirty || menuAvailability.food === menuAvailability.drinks) return;
+    const onlyAvailableType = menuAvailability.drinks ? "drinks" : "food";
+    if (menuType !== onlyAvailableType) selectMenuType(onlyAvailableType);
+  }, [menuAvailability, menuType, loading, saving, dirty]);
 
   const openAddDialog = () => {
     setDialogError("");
@@ -271,7 +532,7 @@ export default function Admin() {
     let nextId = numericIds.length ? Math.max(...numericIds) + 1 : 0;
     for (const item of sourceEntries) {
       if (item.deleted) {
-        if (!item.id.startsWith("new-") && flatMenuRef.current) updates[`Podaci/${item.id}`] = null;
+        if (!item.id.startsWith("new-") && flatMenuRef.current) updates[`${menuDataNode}/${item.id}`] = null;
         continue;
       }
       const name = item.name.trim();
@@ -286,13 +547,13 @@ export default function Admin() {
       const savedItem = { name, category, description: item.description.trim(), price };
       if (flatMenuRef.current) {
         if (item.id.startsWith("new-")) {
-          updates[`Podaci/${id}`] = savedItem;
+          updates[`${menuDataNode}/${id}`] = savedItem;
         } else {
           const original = originalEntriesRef.current[item.id];
           if (!original) {
-            updates[`Podaci/${id}`] = savedItem;
+            updates[`${menuDataNode}/${id}`] = savedItem;
           } else {
-            const path = `Podaci/${id}/`;
+            const path = `${menuDataNode}/${id}/`;
             if (name !== original.name.trim()) updates[`${path}name`] = name;
             if (category !== original.category.trim()) updates[`${path}category`] = category;
             if (savedItem.description !== original.description.trim()) updates[`${path}description`] = savedItem.description;
@@ -306,7 +567,7 @@ export default function Admin() {
       savedEntries.push(newEntry(id, savedItem));
     }
     if (!flatMenuRef.current) {
-      updates.Podaci = Object.fromEntries(savedEntries.map((item) => [item.id, {
+      updates[menuDataNode] = Object.fromEntries(savedEntries.map((item) => [item.id, {
         name: item.name.trim(),
         category: item.category.trim(),
         description: item.description.trim(),
@@ -327,6 +588,17 @@ export default function Admin() {
       originalEntriesRef.current = Object.fromEntries(savedEntries.map((item) => [item.id, item]));
       flatMenuRef.current = true;
       setMenuCreateAt(createAt);
+      try {
+        const cachedItems = Object.fromEntries(savedEntries.map((item) => [item.id, {
+          name: item.name.trim(),
+          category: item.category.trim(),
+          description: item.description.trim(),
+          price: parsePrice(item.price),
+        }]));
+        localStorage.setItem(`admin-menu-cache:${N.ROOT_RESTORAN}:${menuDataNode}`, JSON.stringify({
+          version: String(now.getTime()), createAt, items: cachedItems, flat: true,
+        }));
+      } catch { /* Cache is optional; Firebase remains the source of truth. */ }
       dirtyRef.current = false;
       setDirty(false);
       setDialogError("");
@@ -415,12 +687,42 @@ export default function Admin() {
           </div>
         </header>
 
+        {(menuAvailability.food || menuAvailability.drinks) && <nav aria-label="Izbor menija" style={{ ...styles.panel, display: "flex", gap: 8, marginBottom: 12, padding: 7, background: "#edf2ef" }}>
+          {[{ type: "food", label: "HRANA", Icon: Utensils }, { type: "drinks", label: "PIĆE", Icon: Wine }].filter(({ type }) => menuAvailability[type]).map(({ type, label, Icon }) => {
+            const active = menuType === type;
+            return (
+              <button
+                key={type}
+                type="button"
+                aria-pressed={active}
+                disabled={loading || saving}
+                onClick={() => selectMenuType(type)}
+                style={{ flex: 1, minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 9, border: `1px solid ${active ? "#176b55" : "#d8e3de"}`, borderRadius: 12, padding: "10px 14px", background: active ? "#176b55" : "white", color: active ? "white" : "#36584b", font: "inherit", fontWeight: 800, letterSpacing: ".06em", cursor: loading || saving ? "wait" : "pointer", opacity: loading || saving ? .65 : 1 }}
+              >
+                <Icon size={19} strokeWidth={2.2} /> {label}
+              </button>
+            );
+          })}
+        </nav>}
+
+        <section style={{ ...styles.panel, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12, padding: "12px 15px", borderColor: "#b9d8ca", background: "linear-gradient(110deg,#eef8f2,#f5f9f7)" }}>
+          <div><strong style={{ color: "#174d3d", fontSize: 14 }}>Prikaz menija za naručivanje</strong><div style={{ color: "#687974", fontSize: 12, marginTop: 3 }}>Izaberi da li konobari vide hranu, piće ili oboje.</div></div>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+            {[{ type: "food", label: "HRANA", checked: showHrana ?? menuAvailability.food }, { type: "drinks", label: "PIĆE", checked: showPice ?? menuAvailability.drinks }].map(({ type, label, checked }) => (
+              <label key={type} style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 11px", border: "1px solid #cfe0d8", borderRadius: 11, background: "white", color: "#36584b", fontSize: 13, fontWeight: 800, cursor: "pointer" }}>
+                <input type="checkbox" checked={checked} disabled={saving || !menuAvailabilityResolved.food || !menuAvailabilityResolved.drinks || !menuShowSettingsResolved.food || !menuShowSettingsResolved.drinks} onChange={(event) => setOrderingVisibility(type, event.target.checked)} />
+                {label}
+              </label>
+            ))}
+          </div>
+        </section>
+
         <section style={{ ...styles.panel, marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div><strong>{entries.filter((item) => !item.deleted).length} artikala</strong></div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button disabled={loading || saving} style={{ ...styles.button, background: "#176b55", color: "white", borderColor: "#176b55", opacity: loading || saving ? 0.55 : 1 }} onClick={openAddDialog}>＋ Dodaj artikal</button>
-              <button disabled={loading || saving} style={{ ...styles.button, opacity: loading || saving ? 0.55 : 1 }} onClick={() => { setDialogError(""); setModal({ type: "bulk" }); }}>Promijeni sve cijene</button>
+              <button disabled={loading || saving} style={{ ...styles.button, opacity: loading || saving ? 0.55 : 1 }} onClick={() => { setDialogError(""); setModal({ type: "bulk" }); }}>Promjena cijena za sve artikle ({menuType === "food" ? "HRANA" : "PIĆE"})</button>
             </div>
           </div>
           <label style={{ ...styles.label, marginTop: 14 }}>Pretraga artikala<input style={styles.input} value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Pretraži po nazivu, kategoriji ili opisu" /></label>
@@ -464,7 +766,7 @@ export default function Admin() {
         </div>}
         {modal && <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }} style={{ position: "fixed", zIndex: 10, inset: 0, background: "#101b17a6", display: "flex", justifyContent: "center", alignItems: "center", padding: 16 }}>
           <section role="dialog" aria-modal="true" aria-labelledby="menu-dialog-title" style={{ width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", background: "white", borderRadius: 18, padding: 20, boxShadow: "0 24px 70px #0004" }}>
-            <h2 id="menu-dialog-title" style={{ margin: "0 0 8px", fontSize: 21 }}>{modal.type === "add" ? "Dodaj artikal" : modal.type === "bulk" ? "Primijeni sve cijene" : modal.type === "delete" ? "Ukloniti artikal?" : modal.itemName}</h2>
+            <h2 id="menu-dialog-title" style={{ margin: "0 0 8px", fontSize: 21 }}>{modal.type === "add" ? `Dodaj artikal (${menuType === "food" ? "HRANA" : "PIĆE"})` : modal.type === "bulk" ? `Promjena cijena za sve artikle (${menuType === "food" ? "HRANA" : "PIĆE"})` : modal.type === "delete" ? "Ukloniti artikal?" : modal.itemName}</h2>
             {modal.type === "add" && <>
               <p style={{ margin: "0 0 14px", color: "#718078", fontSize: 13 }}>Kategorija, naziv i cijena su obavezni. Opis može ostati prazan.</p>
               <div style={{ display: "grid", gap: 11 }}>

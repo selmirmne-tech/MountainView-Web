@@ -4,7 +4,7 @@ import { child, get, onValue, update } from "firebase/database";
 import { rootRestoran, usersRestoran } from "../firebase/refs";
 import { auth, getMessagingSafe } from "../firebase/config";
 import { getToken } from "firebase/messaging";
-import { Bell, Info, LogOut, Menu, X } from "lucide-react";
+import { Bell, Info, LogOut, Menu, QrCode, X } from "lucide-react";
 
 const readLocalUser = () => {
   try {
@@ -344,6 +344,7 @@ Kontaktirajte administratora
           </button>
           {accountMenuOpen && <div role="menu" style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 20, width: 220, padding: 7, border: "1px solid #e2eae6", borderRadius: 15, background: "white", boxShadow: "0 16px 40px rgba(18,38,31,.18)" }}>
             <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); navigate("/about"); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: "pointer" }}><Info size={18} /> Informacije</button>
+            <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); navigate("/qr-menu"); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: "pointer" }}><QrCode size={18} /> QR meni</button>
             <button type="button" role="menuitem" onClick={() => void enableNotifications()} disabled={notificationBusy} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: notificationBusy ? "wait" : "pointer", opacity: notificationBusy ? 0.65 : 1 }}><Bell size={18} /> {notificationBusy ? "Uključujem obavještenja…" : user?.fcmToken ? "Osvježi obavještenja" : "Uključi obavještenja"}</button>
             <button type="button" role="menuitem" onClick={async () => {
               if (!window.confirm("Da li ste sigurni da želite da se odjavite?")) return;

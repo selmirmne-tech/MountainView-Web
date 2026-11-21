@@ -16,6 +16,7 @@ import Obracun from "./pages/Obracun";
 import About from "./pages/about";
 import Uslovi from "./pages/Uslovi";
 import Politika from "./pages/Politika";
+import QrMenu from "./pages/QrMenu";
 import { appUpdateRestoran, infoConnected } from "./firebase/refs";
 import { auth } from "./firebase/config";
 import { APP_VERSION } from "./config/appVersion";
@@ -330,6 +331,15 @@ useEffect(() => {
           element={
             <ProtectedRoute user={activeUser}>
               <About />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/qr-menu"
+          element={
+            <ProtectedRoute user={activeUser}>
+              <QrMenu />
             </ProtectedRoute>
           }
         />

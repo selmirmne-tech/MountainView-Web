@@ -31,41 +31,9 @@ export default function CartModal({
  useEffect(() => {
 
   document.body.style.overflow = "hidden";
-
-
-  const state = {
-    cartModal: true
-  };
-
-
-  window.history.pushState(
-    state,
-    "",
-    window.location.href
-  );
-
-
-  const handleBack = () => {
-
-    onClose();
-
-  };
-
-
-  window.addEventListener(
-    "popstate",
-    handleBack
-  );
-
-
   return () => {
 
     document.body.style.overflow = "";
-
-    window.removeEventListener(
-      "popstate",
-      handleBack
-    );
 
   };
 

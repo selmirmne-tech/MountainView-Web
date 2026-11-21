@@ -48,8 +48,19 @@ const [showBottom, setShowBottom] = useState(true);
 	
   const [orders, setOrders] = useState([]);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const orderDialogContentRef = useRef(null);
+  const selectedOrderId = selectedOrder?.orderId;
   const [toast, setToast] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  useEffect(() => {
+    if (!selectedOrderId) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const content = orderDialogContentRef.current;
+      if (content) content.scrollTop = content.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedOrderId]);
 
   const isProcessingRef = useRef(false);
   const wakeLockRef = useRef(null);
@@ -920,37 +931,49 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
           style={{
             position: "fixed",
             inset: 0,
+            zIndex: 1100,
             background: "rgba(0,0,0,0.5)",
             display: "flex",
-            alignItems: "flex-end",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
           }}
         >
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
-            background:"#fff",
-width:"100%",
-padding:24,
-borderTopLeftRadius:30,
-borderTopRightRadius:30,
-boxShadow:"0 -20px 50px rgba(0,0,0,.18)"
+            background: "#fff",
+            width: "100%",
+            maxWidth: 560,
+            maxHeight: "calc(100dvh - 32px)",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            borderRadius: 24,
+            boxShadow: "0 20px 50px rgba(0,0,0,.18)",
             }}
           >
-    <button
-  onClick={() => {
-   if (loadingOrderId !== null || deletingOrderId !== null) return;
+            <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px", borderBottom: "1px solid #e5e7eb", background: "#fff" }}>
+              <h3 style={{ margin: 0, fontSize: 19, fontWeight: 800 }}>
+                {selectedOrder.orderPersonName}
+              </h3>
+              <button
+                type="button"
+                aria-label="Zatvori narudžbu"
+                onClick={() => {
+                  if (loadingOrderId !== null || deletingOrderId !== null) return;
+                  vibrate();
+                  setSelectedOrder(null);
+                  setShowDeleteConfirm(false);
+                }}
+                disabled={loadingOrderId !== null || deletingOrderId !== null}
+                style={{ flex: "0 0 auto", width: 42, height: 42, display: "grid", placeItems: "center", border: "1px solid #e5e7eb", borderRadius: 12, background: "#f9fafb", color: "#374151", cursor: loadingOrderId !== null || deletingOrderId !== null ? "not-allowed" : "pointer" }}
+              >
+                <X size={22} />
+              </button>
+            </div>
 
-    vibrate();
-    setSelectedOrder(null);
-  }}
- disabled={loadingOrderId !== null || deletingOrderId !== null}
->
-  <X />
-</button>
-
-            <h3>
-              {selectedOrder.orderPersonName}
-            </h3>
+            <div ref={orderDialogContentRef} style={{ minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", padding: 20 }}>
 			
 			
 					{selectedOrder.addittionalInfo && (
@@ -1193,6 +1216,7 @@ boxShadow:"0 -20px 50px rgba(0,0,0,.18)"
                 </div>
               </div>
             )}
+            </div>
           </div>
         </div>
       )}

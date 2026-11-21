@@ -1,21 +1,23 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { onValue, push, set, remove} from "firebase/database";
+import { child, get, onValue, push, set, remove} from "firebase/database";
 import { menuRestoran, ordersRestoran } from "../firebase/refs";
+import * as N from "../firebase/nodes";
 import CartModal from "../components/CartModal";
 
 const MENU_CACHE_KEY = "restoran_menu";
 const MENU_DATE_KEY = "restoran_menu_date";
-
+const MENU_DISPLAY_CACHE_KEY = "restoran_menu_display";
 const menuVersion = (value) => {
   const match = String(value || "").match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})/);
   return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])).getTime() : 0;
 };
 
-const readCurrentMenu = (data) => {
-  if (data?.Podaci && typeof data.Podaci === "object") {
-    return { items: data.Podaci, version: String(data.createAtMillis || data.createAt || "flat-menu"), createAt: String(data.createAt || "") };
+const readCurrentMenu = (data, menuNode = "Podaci") => {
+  if (data?.[menuNode] && typeof data[menuNode] === "object") {
+    return { items: data[menuNode], version: String(data.createAtMillis || data.createAt || "flat-menu"), createAt: String(data.createAt || "") };
   }
+  if (menuNode === "Podaci1") return { items: {}, version: String(data?.createAtMillis || data?.createAt || "empty"), createAt: String(data?.createAt || "") };
   const dated = Object.entries(data || {})
     .filter(([key, value]) => key !== "createAt" && key !== "createAtMillis" && value?.Podaci)
     .sort(([a], [b]) => menuVersion(b) - menuVersion(a));
@@ -26,6 +28,7 @@ const readCurrentMenu = (data) => {
 export default function Naruci() {
 const navigate = useNavigate();
   const [menu, setMenu] = useState([]);
+  const [menuType, setMenuType] = useState("food");
   const [loading, setLoading] = useState(true);
 
   // samo selekcija artikala
@@ -49,6 +52,9 @@ const [ordered, setOrdered] = useState(false);
 
 
 const categoryRef = useRef(null);
+const cartHistoryOpenRef = useRef(false);
+const allMenuRef = useRef([]);
+const displayFlagsRef = useRef({ food: true, drinks: true });
 
  
 
@@ -92,7 +98,8 @@ const getMenuCache=()=>{
 
 useEffect(() => {
   const handleBack = () => {
-    if (showCart) {
+    if (cartHistoryOpenRef.current) {
+      cartHistoryOpenRef.current = false;
       setShowCart(false);
       return;
     }
@@ -105,51 +112,199 @@ useEffect(() => {
   return () => {
     window.removeEventListener("popstate", handleBack);
   };
-}, [showCart, navigate]);
+}, [navigate]);
  
  
  
 useEffect(() => {
-  const cached = getMenuCache();
-  const cachedVersion = localStorage.getItem(MENU_DATE_KEY);
-  const lastVersion = { current: cachedVersion };
-  if (cached) {
-    setMenu(cached);
-    setLoading(false);
+  let mounted = true;
+  let syncing = false;
+  let queuedVersion = null;
+  let unsubscribeFoodFlag = () => {};
+  let unsubscribeDrinksFlag = () => {};
+  let unsubscribeVersion = () => {};
+  let unsubscribeCreateAt = () => {};
+  const menuRef = menuRestoran();
+  let cached = null;
+  try { cached = getMenuCache(); } catch { cached = null; }
+  const lastVersion = { current: localStorage.getItem(MENU_DATE_KEY) };
+
+  try {
+    allMenuRef.current = (cached || []).map((item) => {
+      const type = item.menuType || "food";
+      const sourceId = item.sourceId || String(item.id).replace(/^(food|drinks):/, "");
+      return { ...item, sourceId, menuType: type, id: `${type}:${sourceId}` };
+    });
+  } catch { allMenuRef.current = []; }
+  try {
+    const savedFlags = JSON.parse(localStorage.getItem(MENU_DISPLAY_CACHE_KEY) || "null");
+    displayFlagsRef.current = savedFlags && typeof savedFlags === "object"
+      ? { food: savedFlags.food !== false, drinks: savedFlags.drinks !== false }
+      : {
+        food: allMenuRef.current.some((item) => item.menuType === "food"),
+        drinks: allMenuRef.current.some((item) => item.menuType === "drinks"),
+      };
+  } catch {
+    displayFlagsRef.current = {
+      food: allMenuRef.current.some((item) => item.menuType === "food"),
+      drinks: allMenuRef.current.some((item) => item.menuType === "drinks"),
+    };
   }
+  let lastSyncedDisplayFlags = { ...displayFlagsRef.current };
 
-  const unsubscribe = onValue(menuRestoran(), (snap) => {
-    if (!snap.exists()) {
-      setMenu([]);
-      setCart({});
-      setSelectedItems([]);
-      saveMenuCache([], "empty");
-      lastVersion.current = "empty";
-      setLoading(false);
-      return;
-    }
-
-    const { items, version, createAt } = readCurrentMenu(snap.val());
-    const list = Object.entries(items).map(([id, item]) => ({ id, ...item }));
+  const applyVisibleMenu = () => {
+    if (!mounted) return;
+    const list = allMenuRef.current.filter((item) =>
+      item.menuType === "food" ? displayFlagsRef.current.food : displayFlagsRef.current.drinks);
     setMenu(list);
     const currentItems = new Map(list.map((item) => [item.id, item]));
     setSelectedItems((current) => current.filter((id) => currentItems.has(id)));
     setCart((current) => Object.fromEntries(Object.entries(current)
       .filter(([id]) => currentItems.has(id))
       .map(([id, cartItem]) => [id, { ...currentItems.get(id), qty: cartItem.qty }])));
-    saveMenuCache(list, version);
-    if (lastVersion.current && lastVersion.current !== version) {
-      alert(`Novi meni je preuzet!${createAt ? `\n${createAt}` : ""}`);
+    const hasFood = list.some((item) => item.menuType === "food");
+    const hasDrinks = list.some((item) => item.menuType === "drinks");
+    if (hasDrinks && !hasFood) { setMenuType("drinks"); setCategory("All"); }
+    else if (hasFood && !hasDrinks) { setMenuType("food"); setCategory("All"); }
+    try { localStorage.setItem(MENU_DISPLAY_CACHE_KEY, JSON.stringify(displayFlagsRef.current)); }
+    catch { /* The live menu remains available if browser storage is disabled. */ }
+  };
+
+  applyVisibleMenu();
+  if (allMenuRef.current.length) setLoading(false);
+
+  const syncMenu = async (version) => {
+    if (!mounted) return;
+    if (syncing) { queuedVersion = version; return; }
+    syncing = true;
+    try {
+      const [foodFlagSnapshot, drinksFlagSnapshot] = await Promise.all([
+        get(child(menuRef, N.MENU_SHOW_FOOD)),
+        get(child(menuRef, N.MENU_SHOW_DRINKS)),
+      ]);
+      if (!mounted) return;
+      const foodFlag = typeof foodFlagSnapshot.val() === "boolean" ? foodFlagSnapshot.val() : null;
+      const drinksFlag = typeof drinksFlagSnapshot.val() === "boolean" ? drinksFlagSnapshot.val() : null;
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const explicitlyAllOff = (foodFlag === false && drinksFlag === false)
+        || (offline && !displayFlagsRef.current.food && !displayFlagsRef.current.drinks);
+
+      if (explicitlyAllOff) {
+        displayFlagsRef.current = { food: false, drinks: false };
+        applyVisibleMenu();
+        lastSyncedDisplayFlags = { food: false, drinks: false };
+        if (version) {
+          lastVersion.current = version;
+          saveMenuCache(allMenuRef.current, version);
+        }
+        setLoading(false);
+      } else if (version && lastVersion.current === version && allMenuRef.current.length) {
+        displayFlagsRef.current = {
+          food: foodFlag ?? (offline ? displayFlagsRef.current.food : allMenuRef.current.some((item) => item.menuType === "food")),
+          drinks: drinksFlag ?? (offline ? displayFlagsRef.current.drinks : allMenuRef.current.some((item) => item.menuType === "drinks")),
+        };
+        applyVisibleMenu();
+        lastSyncedDisplayFlags = { ...displayFlagsRef.current };
+        setLoading(false);
+      } else {
+        const [foodSnapshot, drinksSnapshot] = await Promise.all([
+          get(child(menuRef, N.MENU_PODACI)),
+          get(child(menuRef, "Podaci1")),
+        ]);
+        if (!mounted) return;
+        let legacyFood = {};
+        let legacyDrinks = {};
+        if (!foodSnapshot.exists() && foodFlag !== false) {
+          const rootSnapshot = await get(menuRef);
+          if (!mounted) return;
+          const parsedFood = readCurrentMenu(rootSnapshot.exists() ? rootSnapshot.val() : {}, "Podaci");
+          const parsedDrinks = readCurrentMenu(rootSnapshot.exists() ? rootSnapshot.val() : {}, "Podaci1");
+          legacyFood = parsedFood.items || {};
+          legacyDrinks = parsedDrinks.items || {};
+        }
+        const foodItems = foodSnapshot.exists() ? foodSnapshot.val() || {} : legacyFood;
+        const drinksItems = drinksSnapshot.exists() ? drinksSnapshot.val() || {} : legacyDrinks;
+        const allItems = [
+          ...Object.entries(foodItems).map(([sourceId, item]) => ({ ...item, id: `food:${sourceId}`, sourceId, menuType: "food" })),
+          ...Object.entries(drinksItems).map(([sourceId, item]) => ({ ...item, id: `drinks:${sourceId}`, sourceId, menuType: "drinks" })),
+        ];
+        displayFlagsRef.current = {
+          food: foodFlag ?? Object.keys(foodItems).length > 0,
+          drinks: drinksFlag ?? Object.keys(drinksItems).length > 0,
+        };
+        const displaySettingsChanged = displayFlagsRef.current.food !== lastSyncedDisplayFlags.food
+          || displayFlagsRef.current.drinks !== lastSyncedDisplayFlags.drinks;
+        allMenuRef.current = allItems;
+        applyVisibleMenu();
+        saveMenuCache(allItems, version || "empty");
+        if (lastVersion.current && lastVersion.current !== version && !displaySettingsChanged) {
+          const dateSnapshot = await get(child(menuRef, N.MENU_CREATE_AT));
+          if (!mounted) return;
+          const createAt = String(dateSnapshot.val() || "");
+          alert(`Novi meni je preuzet!${createAt ? `\n${createAt}` : ""}`);
+        }
+        lastSyncedDisplayFlags = { ...displayFlagsRef.current };
+        lastVersion.current = version || "empty";
+        setLoading(false);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      console.error("MENU LOAD ERROR:", error);
+      if (!allMenuRef.current.length) setMenu([]);
+      setLoading(false);
+    } finally {
+      syncing = false;
+      if (mounted && queuedVersion && queuedVersion !== lastVersion.current) {
+        const nextVersion = queuedVersion;
+        queuedVersion = null;
+        syncMenu(nextVersion);
+      }
     }
-    lastVersion.current = version;
-    setLoading(false);
-  }, (error) => {
-    console.error("MENU LOAD ERROR:", error);
-    if (!cached) setMenu([]);
-    setLoading(false);
+  };
+
+  const subscribeFlag = (node, isFood) => onValue(child(menuRef, node), (snapshot) => {
+    if (!mounted) return;
+    const value = snapshot.val();
+    const enabled = typeof value === "boolean" ? value
+      : (typeof navigator !== "undefined" && navigator.onLine === false
+        ? displayFlagsRef.current[isFood ? "food" : "drinks"]
+        : allMenuRef.current.some((item) => item.menuType === (isFood ? "food" : "drinks")));
+    displayFlagsRef.current = { ...displayFlagsRef.current, [isFood ? "food" : "drinks"]: enabled };
+    lastSyncedDisplayFlags = { ...displayFlagsRef.current };
+    applyVisibleMenu();
+    // If the guest has no local menu yet (for example, both types were disabled
+    // on first visit), enabling either type must load the current menu once.
+    if (enabled && allMenuRef.current.length === 0) syncMenu(lastVersion.current);
+  }, (error) => console.error("MENU DISPLAY SETTING ERROR:", error));
+  unsubscribeFoodFlag = subscribeFlag(N.MENU_SHOW_FOOD, true);
+  unsubscribeDrinksFlag = subscribeFlag(N.MENU_SHOW_DRINKS, false);
+
+  get(child(menuRef, N.MENU_CREATE_AT_MILLIS)).then((initialVersion) => {
+    if (!mounted) return;
+    if (Number(initialVersion.val()) > 0) {
+      unsubscribeVersion = onValue(child(menuRef, N.MENU_CREATE_AT_MILLIS), (snapshot) => {
+        syncMenu(String(Number(snapshot.val()) || "empty"));
+      }, (error) => console.error("MENU VERSION ERROR:", error));
+    } else {
+      unsubscribeVersion = onValue(child(menuRef, N.MENU_CREATE_AT), (snapshot) => {
+        syncMenu(String(snapshot.val() || "empty"));
+      }, (error) => console.error("MENU VERSION ERROR:", error));
+    }
+  }).catch((error) => {
+    if (!mounted) return;
+    console.error("MENU VERSION ERROR:", error);
+    unsubscribeVersion = onValue(child(menuRef, N.MENU_CREATE_AT_MILLIS), (snapshot) => {
+      syncMenu(String(Number(snapshot.val()) || "empty"));
+    }, (versionError) => console.error("MENU VERSION ERROR:", versionError));
   });
 
-  return unsubscribe;
+  return () => {
+    mounted = false;
+    unsubscribeFoodFlag();
+    unsubscribeDrinksFlag();
+    unsubscribeVersion();
+    unsubscribeCreateAt();
+  };
 }, []);
 
 
@@ -164,12 +319,13 @@ useEffect(() => {
 const categories = useMemo(()=>[
   "All",
   ...new Set(
-    menu
+    menu.filter((item) => item.menuType === menuType)
     .map(i=>i.category)
     .filter(Boolean)
   )
-], [menu]);
+], [menu, menuType]);
 
+const activeMenu = useMemo(() => menu.filter((item) => item.menuType === menuType), [menu, menuType]);
 
 
   const filteredMenu =
@@ -178,11 +334,11 @@ const categories = useMemo(()=>[
 
     ?
 
-    menu
+    activeMenu
 
     :
 
-    menu.filter(
+    activeMenu.filter(
       i=>i.category===category
     );
 
@@ -240,9 +396,11 @@ const resetSelection = () => {
  
  
 const closeCart = () => {
-
-  window.history.back();
-
+  if (cartHistoryOpenRef.current) {
+    window.history.back();
+  } else {
+    setShowCart(false);
+  }
 
 };
  
@@ -292,7 +450,8 @@ const openCart = () => {
     return next;
   });
 
-  window.history.pushState({ cart: true }, "");
+  window.history.pushState({ ...(window.history.state || {}), orderCart: true }, "");
+  cartHistoryOpenRef.current = true;
   setShowCart(true);
 };
 
@@ -570,6 +729,9 @@ setCart({});
 setSelectedItems([]);
 setNote("");
 setShowCart(false);
+if (cartHistoryOpenRef.current) {
+  window.history.back();
+}
 
 setOrdered(true);
 
@@ -652,51 +814,22 @@ pb-40
 >
 
 
- {/* HEADER */}
+{/* IZBOR MENIJA I KATEGORIJE */}
 
-<div
-className="
-flex
-justify-between
-items-center
-mb-5
-"
->
-
-<h1
-className="
-text-white
-text-3xl
-font-black
-"
->
-Meni
-</h1>
-
-
-
-
-
-</div>
-
-
-
-{/* KATEGORIJE */}
+{menu.length > 0 && <div className="sticky top-0 z-50 mb-6 bg-black/95 py-3 backdrop-blur-xl">
+  {menu.some((item) => item.menuType === "food") && menu.some((item) => item.menuType === "drinks") && <div className="mb-2 flex gap-2 px-1">
+    {[{ type: "food", label: "HRANA" }, { type: "drinks", label: "PIĆE" }].map((option) => <button
+      key={option.type}
+      type="button"
+      onClick={() => { setMenuType(option.type); setCategory("All"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+      className={`flex-1 rounded-xl border px-4 py-2 text-sm font-bold tracking-wide ${menuType === option.type ? "border-orange-500 bg-orange-500 text-black" : "border-neutral-700 bg-neutral-900 text-white"}`}
+      aria-pressed={menuType === option.type}
+    >{option.label}</button>)}
+  </div>}
 
 <div
 ref={categoryRef}
-className="
-sticky
-top-0
-z-50
-flex
-gap-3
-overflow-x-auto
-mb-6
-py-3
-bg-black/95
-backdrop-blur-xl
-"
+className="flex gap-3 overflow-x-auto"
 >
 
       {
@@ -709,7 +842,7 @@ backdrop-blur-xl
 
           key={c}
 
-          onClick={()=>setCategory(c)}
+          onClick={()=>{ setCategory(c); window.scrollTo({ top: 0, behavior: "smooth" }); }}
 
           className={`
 
@@ -745,6 +878,7 @@ backdrop-blur-xl
 
 
       </div>
+      </div>}
 	  
 	  
 	 
