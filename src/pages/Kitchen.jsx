@@ -701,6 +701,7 @@ const getWaitMinutes = (order, nowTs) => {
     overflow: "hidden",
   }}
 >
+   <style>{`@keyframes kitchenOrderSheetIn { from { transform: translateY(28px); opacity: .7; } to { transform: translateY(0); opacity: 1; } }`}</style>
    <div
 style={{
     position: "sticky",
@@ -934,9 +935,9 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
             zIndex: 1100,
             background: "rgba(0,0,0,0.5)",
             display: "flex",
-            alignItems: "center",
+            alignItems: "flex-end",
             justifyContent: "center",
-            padding: 16,
+            padding: "0 12px 12px",
           }}
         >
           <div
@@ -945,12 +946,13 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
             background: "#fff",
             width: "100%",
             maxWidth: 560,
-            maxHeight: "calc(100dvh - 32px)",
+            maxHeight: "calc(100dvh - 112px)",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
             borderRadius: 24,
             boxShadow: "0 20px 50px rgba(0,0,0,.18)",
+            animation: "kitchenOrderSheetIn 220ms ease-out",
             }}
           >
             <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 20px", borderBottom: "1px solid #e5e7eb", background: "#fff" }}>
@@ -1300,11 +1302,11 @@ style={{
   position:"fixed",
   inset:0,
   pointerEvents:"none",
-  zIndex:2000
+  zIndex:1000
 }}
 >
 
-{showTop && (
+{showTop && !selectedOrder && (
 
 <button
 onClick={scrollToTop}
@@ -1344,7 +1346,7 @@ style={{
 
 
 
-{showBottom && (
+{showBottom && !selectedOrder && (
  
  
 <button
