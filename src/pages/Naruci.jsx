@@ -126,6 +126,8 @@ useEffect(() => {
   let unsubscribeDrinksFlag = () => {};
   let unsubscribeVersion = () => {};
   let unsubscribeCreateAt = () => {};
+  const liveFlagRevision = { food: 0, drinks: 0 };
+  const liveFlagValues = { food: null, drinks: null };
   const menuRef = menuRestoran();
   let cached = null;
   try { cached = getMenuCache(); } catch { cached = null; }
@@ -187,8 +189,10 @@ useEffect(() => {
       if (!mounted) return;
       const foodFlag = typeof foodFlagSnapshot.val() === "boolean" ? foodFlagSnapshot.val() : null;
       const drinksFlag = typeof drinksFlagSnapshot.val() === "boolean" ? drinksFlagSnapshot.val() : null;
+      const latestFoodFlag = () => liveFlagRevision.food > 0 ? liveFlagValues.food : foodFlag;
+      const latestDrinksFlag = () => liveFlagRevision.drinks > 0 ? liveFlagValues.drinks : drinksFlag;
       const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-      const explicitlyAllOff = (foodFlag === false && drinksFlag === false)
+      const explicitlyAllOff = (latestFoodFlag() === false && latestDrinksFlag() === false)
         || (offline && !displayFlagsRef.current.food && !displayFlagsRef.current.drinks);
 
       if (explicitlyAllOff) {
@@ -202,8 +206,8 @@ useEffect(() => {
         setLoading(false);
       } else if (version && lastVersion.current === version && allMenuRef.current.length) {
         displayFlagsRef.current = {
-          food: foodFlag ?? (offline ? displayFlagsRef.current.food : allMenuRef.current.some((item) => item.menuType === "food")),
-          drinks: drinksFlag ?? (offline ? displayFlagsRef.current.drinks : allMenuRef.current.some((item) => item.menuType === "drinks")),
+          food: latestFoodFlag() ?? (offline ? displayFlagsRef.current.food : allMenuRef.current.some((item) => item.menuType === "food")),
+          drinks: latestDrinksFlag() ?? (offline ? displayFlagsRef.current.drinks : allMenuRef.current.some((item) => item.menuType === "drinks")),
         };
         applyVisibleMenu();
         lastSyncedDisplayFlags = { ...displayFlagsRef.current };
@@ -231,8 +235,8 @@ useEffect(() => {
           ...Object.entries(drinksItems).map(([sourceId, item]) => ({ ...item, id: `drinks:${sourceId}`, sourceId, menuType: "drinks" })),
         ];
         displayFlagsRef.current = {
-          food: foodFlag ?? Object.keys(foodItems).length > 0,
-          drinks: drinksFlag ?? Object.keys(drinksItems).length > 0,
+          food: latestFoodFlag() ?? Object.keys(foodItems).length > 0,
+          drinks: latestDrinksFlag() ?? Object.keys(drinksItems).length > 0,
         };
         const displaySettingsChanged = displayFlagsRef.current.food !== lastSyncedDisplayFlags.food
           || displayFlagsRef.current.drinks !== lastSyncedDisplayFlags.drinks;
@@ -271,6 +275,9 @@ useEffect(() => {
       : (typeof navigator !== "undefined" && navigator.onLine === false
         ? displayFlagsRef.current[isFood ? "food" : "drinks"]
         : allMenuRef.current.some((item) => item.menuType === (isFood ? "food" : "drinks")));
+    const flagKey = isFood ? "food" : "drinks";
+    liveFlagRevision[flagKey] += 1;
+    liveFlagValues[flagKey] = enabled;
     displayFlagsRef.current = { ...displayFlagsRef.current, [isFood ? "food" : "drinks"]: enabled };
     lastSyncedDisplayFlags = { ...displayFlagsRef.current };
     applyVisibleMenu();
