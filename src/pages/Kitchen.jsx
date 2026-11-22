@@ -301,6 +301,15 @@ const getWaitMinutes = (order, nowTs) => {
       .filter((l) => l.trim() !== "")
       .join("\n");
   };
+
+  const getOrderItems = (order) => {
+    const names = String(order?.name || "").split(/\r?\n/);
+    const descriptions = String(order?.description || "").split(/\r?\n/);
+    return names.map((name, index) => ({
+      name: name.trim(),
+      description: String(descriptions[index] || "").trim(),
+    })).filter((item) => item.name || item.description);
+  };
   
   const parseOrderPrice = (price) => {
     if (typeof price === "number") {
@@ -996,15 +1005,16 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
   </div>
 )}
 
-            <div
-              style={{
-                whiteSpace: "pre-wrap",
-                background: "#f8f8f8",
-                padding: 10,
-                borderRadius: 10,
-              }}
-            >
-              {formatName(selectedOrder.name)}
+            <div style={{ marginTop: 14 }}>
+              <div style={{ margin: "0 0 8px 2px", color: "#64748b", fontSize: 11, fontWeight: 800, letterSpacing: ".1em" }}>NARUČENI ARTIKLI</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {getOrderItems(selectedOrder).map((item, index) => (
+                  <div key={`${index}-${item.name}`} style={{ padding: "11px 13px", border: "1px solid #e2eae6", borderRadius: 12, background: "#f8fbf9" }}>
+                    {item.name && <div style={{ color: "#173c32", fontSize: 15, fontWeight: 800, lineHeight: 1.35 }}>{item.name}</div>}
+                    {item.description && <div style={{ marginTop: 4, color: "#64736c", fontSize: 13, lineHeight: 1.45 }}>{item.description}</div>}
+                  </div>
+                ))}
+              </div>
             </div>
 			
 			

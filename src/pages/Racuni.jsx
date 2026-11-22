@@ -22,20 +22,35 @@ useEffect(() => {
 
     try {
       const raw = status.replace("Complete", "").trim();
-
+      const match = raw.match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+      if (match) {
+        return new Date(
+          Number(match[3]), Number(match[2]) - 1, Number(match[1]),
+          Number(match[4]), Number(match[5]), Number(match[6] || 0)
+        ).getTime();
+      }
       const direct = new Date(raw).getTime();
-      if (!isNaN(direct)) return direct;
-
-      const [datePart, timePart] = raw.split(" ");
-      if (!datePart || !timePart) return 0;
-
-      const [d, m, y] = datePart.split("-");
-      const [h, min, s] = timePart.split(":");
-
-      return new Date(y, m - 1, d, h, min, s).getTime();
+      return Number.isFinite(direct) ? direct : 0;
     } catch {
       return 0;
     }
+  };
+
+  const formatReceiptDate = (timestamp) => {
+    const date = new Date(timestamp);
+    const weekdays = ["Nedelja", "Ponedeljak", "Utorak", "Srijeda", "Četvrtak", "Petak", "Subota"];
+    const day = String(date.getDate()).padStart(2, "0");
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    return `${weekdays[date.getDay()]}, ${day}/${month}/${date.getFullYear()}`;
+  };
+
+  const getReceiptItems = (order) => {
+    const names = String(order?.name || "").split(/\r?\n/);
+    const descriptions = String(order?.description || "").split(/\r?\n/);
+    return names.map((name, index) => ({
+      name: name.trim(),
+      description: String(descriptions[index] || "").trim(),
+    })).filter((item) => item.name || item.description);
   };
 
   useEffect(() => {
@@ -99,6 +114,25 @@ useEffect(() => {
     };
 
   }, []);
+
+  const orderGroups = [];
+  orders.forEach((order) => {
+    const timestamp = parseCompletedTime(order.status);
+    const date = new Date(timestamp);
+    const dateKey = Number.isNaN(date.getTime()) || timestamp <= 0
+      ? "unknown-date"
+      : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    let group = orderGroups[orderGroups.length - 1];
+    if (!group || group.key !== dateKey) {
+      group = {
+        key: dateKey,
+        title: dateKey === "unknown-date" ? "Datum nije dostupan" : formatReceiptDate(timestamp),
+        orders: [],
+      };
+      orderGroups.push(group);
+    }
+    group.orders.push(order);
+  });
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -169,9 +203,9 @@ if (loading) {
   return (
   <div style={{
   height: "100vh",
-  background: "linear-gradient(90deg, #22c55e, #2563eb)",
-  padding: 12,
-      fontFamily: "sans-serif",
+  background: "#f1f5f9",
+  padding: "clamp(12px, 2.5vw, 28px)",
+      fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
       overflow: "hidden",
       display: "flex",
       flexDirection: "column"
@@ -207,20 +241,20 @@ if (loading) {
       )}
 
       <div style={{
-        background: "linear-gradient(135deg, #1e1e2f, #2c2c44)",
+        background: "linear-gradient(135deg, #123d32, #176b55)",
         color: "white",
-        padding: 20,
-        borderRadius: 16,
+        padding: "20px 24px",
+        borderRadius: 20,
         marginBottom: 12,
         textAlign: "center",
         boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
       }}>
-        <div style={{ fontSize: 13, opacity: 0.7 }}>
+        <div style={{ fontSize: 12, opacity: 0.8, letterSpacing: ".12em", fontWeight: 800 }}>
           UKUPAN PAZAR
         </div>
 
         <div style={{
-          fontSize: 34,
+          fontSize: "clamp(28px, 5vw, 38px)",
           fontWeight: "bold",
           marginTop: 5
         }}>
@@ -233,23 +267,32 @@ if (loading) {
         overflowY: "auto",
         display: "flex",
         flexDirection: "column",
-        gap: 12
+        gap: 22,
+        padding: "2px 3px 24px"
       }}>
 
-        {orders.map(order => (
+        {orderGroups.map((group) => (
+          <section key={group.key} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "4px 2px" }}>
+              <h2 style={{ margin: 0, color: "#173c32", fontSize: 15, fontWeight: 850, letterSpacing: ".01em" }}>{group.title}</h2>
+              <span style={{ padding: "4px 9px", borderRadius: 999, background: "#e3eee9", color: "#36584b", fontSize: 11, fontWeight: 750, whiteSpace: "nowrap" }}>{group.orders.length} računa</span>
+            </div>
+            <div style={{ display: "grid", gap: 10 }}>
+              {group.orders.map(order => (
           <div
             key={order.id}
             onClick={() => {
               setSelectedOrder(order);
-              setShowDeleteDialog(false);
             }}
             style={{
               background: "white",
               borderRadius: 16,
-              padding: 14,
-              boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-              borderLeft: "4px solid #2c2c44",
-              cursor: "pointer"
+              padding: "15px 16px",
+              boxShadow: "0 3px 12px rgba(15, 45, 35, 0.06)",
+              border: "1px solid #e2eae6",
+              borderLeft: "4px solid #176b55",
+              cursor: "pointer",
+              transition: "transform .16s ease, box-shadow .16s ease"
             }}
           >
             <div style={{ fontWeight: "bold" }}>
@@ -299,6 +342,9 @@ if (loading) {
               </div>
             </div>
           </div>
+              ))}
+            </div>
+          </section>
         ))}
       </div>
 
@@ -306,9 +352,11 @@ if (loading) {
         <div style={{
           position: "fixed",
           inset: 0,
+          zIndex: 1200,
           background: "rgba(0,0,0,0.6)",
           display: "flex",
-          alignItems: "flex-end"
+          alignItems: "flex-end",
+          padding: "12px 12px 0"
         }}
         onClick={() => setSelectedOrder(null)}
         >
@@ -317,9 +365,14 @@ if (loading) {
             style={{
               background: "white",
               width: "100%",
-              padding: 16,
+              maxWidth: 680,
+              maxHeight: "88dvh",
+              overflowY: "auto",
+              margin: "0 auto",
+              padding: 20,
               borderTopLeftRadius: 20,
-              borderTopRightRadius: 20
+              borderTopRightRadius: 20,
+              boxShadow: "0 -16px 45px rgba(15, 45, 35, .18)"
             }}
           >
             <h3>{selectedOrder.orderPersonName}</h3>
@@ -349,14 +402,16 @@ if (loading) {
   </div>
 )}
 			
-            <div style={{
-              whiteSpace: "pre-wrap",
-              background: "#f8f8f8",
-              padding: 10,
-              borderRadius: 10,
-              marginTop: 10
-            }}>
-              {selectedOrder.name}
+            <div style={{ marginTop: 14 }}>
+              <div style={{ margin: "0 0 8px 2px", color: "#64748b", fontSize: 11, fontWeight: 800, letterSpacing: ".1em" }}>NARUČENI ARTIKLI</div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {getReceiptItems(selectedOrder).map((item, index) => (
+                  <div key={`${index}-${item.name}`} style={{ padding: "11px 13px", border: "1px solid #e2eae6", borderRadius: 12, background: "#f8fbf9" }}>
+                    {item.name && <div style={{ color: "#173c32", fontSize: 15, fontWeight: 800, lineHeight: 1.35 }}>{item.name}</div>}
+                    {item.description && <div style={{ marginTop: 4, color: "#64736c", fontSize: 13, lineHeight: 1.45 }}>{item.description}</div>}
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div style={{

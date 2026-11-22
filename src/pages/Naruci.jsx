@@ -4,6 +4,8 @@ import { child, get, onValue, push, set, remove} from "firebase/database";
 import { menuRestoran, ordersRestoran } from "../firebase/refs";
 import * as N from "../firebase/nodes";
 import CartModal from "../components/CartModal";
+import { Check, Mic, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { displayVoiceTranscript, inferVoiceQuantity, resolveVoiceOrder } from "../utils/voiceOrder";
 
 const MENU_CACHE_KEY = "restoran_menu";
 const MENU_DATE_KEY = "restoran_menu_date";
@@ -38,6 +40,13 @@ const navigate = useNavigate();
   const [category, setCategory] = useState("All");
 
   const [showCart, setShowCart] = useState(false);
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceError, setVoiceError] = useState("");
+  const [voiceSuggestions, setVoiceSuggestions] = useState(null);
+  const [voiceCandidateQuantities, setVoiceCandidateQuantities] = useState({});
+  const [voiceSuccess, setVoiceSuccess] = useState([]);
 
   // prava korpa se kreira tek kad se otvori modal
   const [cart, setCart] = useState({});
@@ -57,6 +66,20 @@ const resetMenuTypeScrollRef = useRef(false);
 const cartHistoryOpenRef = useRef(false);
 const allMenuRef = useRef([]);
 const displayFlagsRef = useRef({ food: true, drinks: true });
+const speechRecognitionRef = useRef(null);
+const voiceTranscriptRef = useRef("");
+const voiceRecognitionErrorRef = useRef("");
+const voiceRetryTimerRef = useRef(null);
+const voiceSuccessTimerRef = useRef(null);
+const voiceCanceledRef = useRef(false);
+const voiceAudioContextRef = useRef(null);
+
+useEffect(() => () => {
+  window.clearTimeout(voiceRetryTimerRef.current);
+  window.clearTimeout(voiceSuccessTimerRef.current);
+  speechRecognitionRef.current?.abort?.();
+  voiceAudioContextRef.current?.close?.();
+}, []);
 
  
 
@@ -496,7 +519,153 @@ const openCart = () => {
   // ==========================
 
 
-  const increase=(id)=>{
+  const addVoiceMatches = (matches) => {
+  if (!matches?.length) return;
+  const added = matches.map(({ item, quantity }) => ({
+    item,
+    quantity: Math.max(1, Math.min(99, Number(quantity) || 1)),
+  }));
+  setSelectedItems((current) => [...new Set([...current, ...added.map(({ item }) => item.id)])]);
+  setCart((current) => {
+    const next = { ...current };
+    for (const { item, quantity } of added) {
+      const previousQuantity = current[item.id]?.qty ?? (selectedItems.includes(item.id) ? 1 : 0);
+      next[item.id] = { ...current[item.id], ...item, qty: Math.min(99, previousQuantity + quantity) };
+    }
+    return next;
+  });
+  setVoiceSuggestions(null);
+  setVoicePanelOpen(false);
+  setVoiceSuccess(added.map(({ item, quantity }) => ({ name: item.name, quantity })));
+  window.clearTimeout(voiceSuccessTimerRef.current);
+  voiceSuccessTimerRef.current = window.setTimeout(() => setVoiceSuccess([]), 2050);
+};
+
+const processVoiceTranscript = (transcript) => {
+  const text = displayVoiceTranscript(transcript).trim();
+  if (!text) return;
+  setVoiceTranscript(text);
+  voiceTranscriptRef.current = text;
+  const resolved = resolveVoiceOrder(text, menu);
+  if (resolved.matches.length) {
+    addVoiceMatches(resolved.matches);
+    return;
+  }
+  if (resolved.suggestions.length) {
+    const candidates = resolved.suggestions.map(({ item }) => ({ item, quantity: inferVoiceQuantity(text, item) }));
+    setVoiceCandidateQuantities(Object.fromEntries(candidates.map(({ item, quantity }) => [item.id, quantity])));
+    setVoiceSuggestions({ transcript: text, items: candidates });
+    setVoicePanelOpen(false);
+    return;
+  }
+  setVoicePanelOpen(true);
+  setVoiceError("Nisam pronašao taj artikal. Izgovori makar jednu riječ iz naziva artikla.");
+  setVoiceListening(false);
+};
+
+const playVoiceReadyBeep = () => {
+  const context = voiceAudioContextRef.current;
+  if (!context) return;
+  const play = () => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const now = context.currentTime;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(880, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.12, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.17);
+  };
+  if (context.state === "suspended") context.resume().then(play).catch(() => {});
+  else play();
+};
+
+const startVoiceRecognition = () => {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  setVoiceSuggestions(null);
+  setVoiceError("");
+  setVoiceTranscript("");
+  voiceTranscriptRef.current = "";
+  voiceRecognitionErrorRef.current = "";
+  voiceCanceledRef.current = false;
+  setVoicePanelOpen(true);
+  if (!Recognition) {
+    setVoiceError("Ovaj pregledač ne podržava prepoznavanje govora. Otvori meni u Chrome-u ili Edge-u.");
+    return;
+  }
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass && !voiceAudioContextRef.current) {
+      voiceAudioContextRef.current = new AudioContextClass();
+    }
+    if (voiceAudioContextRef.current?.state === "suspended") {
+      voiceAudioContextRef.current.resume().catch(() => {});
+    }
+    const recognition = new Recognition();
+    speechRecognitionRef.current = recognition;
+    recognition.lang = "sr-RS";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => {
+      setVoiceListening(true);
+      vibrate(55);
+      playVoiceReadyBeep();
+    };
+    recognition.onresult = (event) => {
+      const text = displayVoiceTranscript(Array.from(event.results)
+        .map((result) => result?.[0]?.transcript || "").filter(Boolean).join(" ").trim());
+      voiceTranscriptRef.current = text;
+      setVoiceTranscript(text);
+    };
+    recognition.onerror = (event) => {
+      voiceRecognitionErrorRef.current = event.error || "speech-error";
+      setVoiceListening(false);
+    };
+    recognition.onend = () => {
+      speechRecognitionRef.current = null;
+      setVoiceListening(false);
+      if (voiceCanceledRef.current) return;
+      const text = voiceTranscriptRef.current.trim();
+      if (text) { processVoiceTranscript(text); return; }
+      window.clearTimeout(voiceRetryTimerRef.current);
+      voiceRetryTimerRef.current = window.setTimeout(() => {
+        const error = voiceRecognitionErrorRef.current;
+        setVoiceError(error === "not-allowed" || error === "service-not-allowed"
+          ? "Dozvoli pristup mikrofonu u podešavanjima pregledača."
+          : error === "network"
+            ? "Prepoznavanje govora nije dostupno. Provjeri internet vezu."
+            : "Nisam čuo govor. Pokušaj ponovo i izgovori naziv artikla.");
+      }, 1000);
+    };
+    recognition.start();
+  } catch {
+    setVoiceListening(false);
+    setVoiceError("Mikrofon trenutno nije dostupan. Pokušaj ponovo.");
+  }
+};
+
+const closeVoicePanel = () => {
+  voiceCanceledRef.current = true;
+  window.clearTimeout(voiceRetryTimerRef.current);
+  speechRecognitionRef.current?.abort?.();
+  speechRecognitionRef.current = null;
+  setVoiceListening(false);
+  setVoicePanelOpen(false);
+};
+
+const changeVoiceCandidateQuantity = (itemId, delta) => {
+  setVoiceCandidateQuantities((current) => ({
+    ...current,
+    [itemId]: Math.max(1, Math.min(99, (Number(current[itemId]) || 1) + delta)),
+  }));
+};
+
+const increase=(id)=>{
 
 
     setCart(prev=>({
@@ -859,6 +1028,18 @@ pb-40
       aria-pressed={menuType === option.type}
     >{option.label}</button>)}
   </div>}
+
+  <div className="flex justify-end px-1 pb-2">
+    <button
+      type="button"
+      onClick={startVoiceRecognition}
+      className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold transition ${voiceListening ? "border-red-400 bg-red-500 text-white shadow-lg shadow-red-950/40" : "border-orange-500/50 bg-neutral-900 text-orange-300 hover:bg-orange-500/10"}`}
+      aria-label="Glasovna narudžba"
+    >
+      <Mic size={18} aria-hidden="true" />
+      Glasovna narudžba
+    </button>
+  </div>
 
 <div
 ref={categoryRef}
@@ -1375,6 +1556,125 @@ animate-textUp
 }
 
 
+
+      {voicePanelOpen && (
+        <div
+          className="fixed inset-0 z-[1200] grid place-items-center bg-black/75 p-4 backdrop-blur-sm"
+          onClick={closeVoicePanel}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="voice-order-title"
+            className="w-full max-w-md overflow-hidden rounded-3xl border border-neutral-700 bg-[#111315] text-white shadow-2xl shadow-black/60"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-white/10 px-5 py-4">
+              <div>
+                <div className="mb-1 flex items-center gap-2 text-orange-300">
+                  <Mic size={18} />
+                  <span className="text-xs font-bold uppercase tracking-[0.18em]">Glasovna narudžba</span>
+                </div>
+                <h2 id="voice-order-title" className="text-xl font-black">{voiceListening ? "Slušam…" : voiceError ? "Pokušaj ponovo" : "Izgovori naziv artikla"}</h2>
+              </div>
+              <button type="button" onClick={closeVoicePanel} className="rounded-xl p-2 text-neutral-400 hover:bg-white/10 hover:text-white" aria-label="Zatvori">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-5">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <p className="min-h-12 text-base leading-relaxed text-neutral-200">
+                  {voiceTranscript || voiceError || (voiceListening ? "Izgovori naziv artikla i količinu…" : "Pripremam mikrofon…")}
+                </p>
+                {voiceListening && (
+                  <div className="mt-4 flex h-9 items-center justify-center gap-1.5" aria-label="Slušam govor">
+                    {[10, 18, 26, 15, 30, 20, 12, 24, 15, 28, 11].map((height, index) => (
+                      <span key={index} className="w-1.5 rounded-full bg-orange-400 animate-pulse" style={{ height, animationDuration: `${0.42 + (index % 4) * 0.16}s`, animationDelay: `${index * 45}ms` }} />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <p className="text-center text-sm text-neutral-400">Izgovori naziv artikla i količinu. Narudžba se dodaje tek nakon prepoznavanja.</p>
+              <div className="flex gap-3">
+                <button type="button" onClick={closeVoicePanel} className="flex-1 rounded-2xl border border-neutral-700 bg-neutral-900 px-4 py-3 font-bold text-neutral-200 hover:bg-neutral-800">Otkaži</button>
+                {voiceListening ? (
+                  <button type="button" onClick={() => speechRecognitionRef.current?.stop?.()} className="flex-1 rounded-2xl bg-orange-500 px-4 py-3 font-black text-black hover:bg-orange-400">Završi</button>
+                ) : (
+                  <button type="button" onClick={startVoiceRecognition} className="flex-1 inline-flex items-center justify-center gap-2 rounded-2xl bg-red-600 px-4 py-3 font-black text-white hover:bg-red-500">
+                    <RotateCcw size={17} /> Pokušaj ponovo
+                  </button>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {voiceSuggestions && (
+        <div
+          className="fixed inset-0 z-[1210] grid place-items-center bg-black/75 p-3 backdrop-blur-sm"
+          onClick={() => setVoiceSuggestions(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="voice-suggestions-title"
+            className="flex max-h-[82vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-neutral-200 bg-[#f8faf9] text-[#17231f] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="shrink-0 border-b border-neutral-200 px-5 py-4 sm:px-6">
+              <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-emerald-700"><Mic size={17} /> Glasovna pretraga</div>
+              <h2 id="voice-suggestions-title" className="mt-1 text-xl font-black sm:text-2xl">Izaberi pronađeni artikal</h2>
+              <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-sm leading-relaxed text-neutral-700">
+                Izgovoreno: „{voiceSuggestions.transcript}“ · Dodirni artikal koji želiš dodati.
+              </p>
+            </header>
+            <div className="min-h-0 space-y-3 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6">
+              {voiceSuggestions.items.map(({ item }) => {
+                const quantity = voiceCandidateQuantities[item.id] || 1;
+                const price = Number(String(item.price ?? "0").replace(",", ".")) || 0;
+                return (
+                  <article
+                    key={item.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => addVoiceMatches([{ item, quantity }])}
+                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); addVoiceMatches([{ item, quantity }]); } }}
+                    className="cursor-pointer rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:border-emerald-300 hover:shadow-md"
+                  >
+                    <h3 className="text-lg font-black leading-tight">{item.name}</h3>
+                    {item.description && <p className="mt-1 text-sm leading-relaxed text-neutral-500">{item.description}</p>}
+                    <div className="mt-4 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
+                        <button type="button" onClick={() => changeVoiceCandidateQuantity(item.id, -1)} className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-lg font-black text-emerald-800 hover:bg-emerald-100" aria-label="Smanji količinu"><Minus size={17} /></button>
+                        <span className="min-w-7 text-center text-base font-black">{quantity}</span>
+                        <button type="button" onClick={() => changeVoiceCandidateQuantity(item.id, 1)} className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-lg font-black text-emerald-800 hover:bg-emerald-100" aria-label="Povećaj količinu"><Plus size={17} /></button>
+                      </div>
+                      <span className="text-lg font-black text-emerald-700">{(price * quantity).toFixed(2)} €</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+            <footer className="shrink-0 border-t border-neutral-200 bg-white px-4 py-3 sm:px-6">
+              <button type="button" onClick={() => setVoiceSuggestions(null)} className="w-full rounded-2xl border border-neutral-300 bg-neutral-100 px-4 py-3 font-bold text-neutral-700 hover:bg-neutral-200">Otkaži</button>
+            </footer>
+          </section>
+        </div>
+      )}
+
+      {voiceSuccess.length > 0 && (
+        <div className="pointer-events-none fixed inset-0 z-[1300] grid place-items-center bg-black/35 p-4" aria-live="polite">
+          <div className="animate-checkCircle w-full max-w-sm rounded-3xl border border-emerald-100 bg-white px-6 py-6 text-center text-[#17231f] shadow-2xl">
+            <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-600 text-white shadow-lg shadow-emerald-900/20"><Check size={36} strokeWidth={3} /></div>
+            <div className="mt-4 space-y-1">
+              {voiceSuccess.map((entry, index) => <p key={`${entry.name}-${index}`} className="text-lg font-black">{entry.name} × {entry.quantity}</p>)}
+            </div>
+            <p className="mt-2 font-bold text-emerald-700">Dodato u korpu</p>
+          </div>
+        </div>
+      )}
 
       {/* CART MODAL */}
 
