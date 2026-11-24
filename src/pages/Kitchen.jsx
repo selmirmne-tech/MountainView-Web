@@ -18,7 +18,7 @@ import {
   completeOrderRef,
   deletedOrderRef,
   deletedOrderPath,
-  transactionLockRef,
+  deletedOrdersRestoran,
   rootRestoran,
   mjeseciRestoran,
   waiterMonthStatistics,
@@ -47,6 +47,13 @@ const [showBottom, setShowBottom] = useState(true);
 	
 	
   const [orders, setOrders] = useState([]);
+  const [deletedOrders, setDeletedOrders] = useState([]);
+  const [selectedDepartment, setSelectedDepartment] = useState("food");
+  const [showDeletedOrders, setShowDeletedOrders] = useState(false);
+  const [kitchenFlash, setKitchenFlash] = useState(false);
+  const [barFlash, setBarFlash] = useState(false);
+  const knownWebOrdersRef = useRef(new Set());
+  const isInitialWebOrdersRef = useRef(true);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const orderDialogContentRef = useRef(null);
   const selectedOrderId = selectedOrder?.orderId;
@@ -78,8 +85,20 @@ const [deletingOrderId, setDeletingOrderId] = useState(null);
 
   const userRole = currentUser?.titula || "";
 
-  const canComplete =
-    userRole === "Administrator" || userRole === "Kuhinja";
+  useEffect(() => {
+    if (userRole === "Sank") {
+      setSelectedDepartment("drinks");
+    } else {
+      setSelectedDepartment("food");
+    }
+    setShowDeletedOrders(false);
+  }, [userRole]);
+
+  const canComplete = !showDeletedOrders && (
+    userRole === "Administrator" ||
+    (userRole === "Kuhinja" && selectedDepartment === "food") ||
+    (userRole === "Sank" && selectedDepartment === "drinks")
+  );
 
   const canDelete = userRole === "Administrator";
 const [completedAnimation, setCompletedAnimation] = useState(false);
@@ -154,45 +173,65 @@ const vibrate = () => {
 
 
 
- const sendPushNotification = async (userId, orderId) => {
-  try {
-   const tokenRef = child(
-  child(child(rootRestoran(), N.USERS_RESTORAN), userId),
-  "fcmToken"
-    );
-
-    const tokenSnap = await get(tokenRef);
-
-    const token = tokenSnap.val();
-
-    if (!token) {
-      console.log("Nema FCM tokena za usera:", userId);
-      return;
-    }
-
-    const res = await fetch(
-      "https://fcm-server-topaz.vercel.app/api/sendOrderNotification",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          token,
-          title: "Narudžba završena",
-          body: "Vaša narudžba je spremna!",
-        }),
+  const getDepartmentItemNames = (order, department) => {
+    if (!order?.name) return "";
+    const names = String(order.name).split(/\r?\n/);
+    const types = Array.isArray(order.itemTypes) ? order.itemTypes : [];
+    const matched = [];
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i]?.trim();
+      if (!name) continue;
+      const type = types[i] === "drinks" ? "drinks" : "food";
+      if (type === department) {
+        matched.push(name);
       }
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      console.log("Push failed:", text);
     }
-  } catch (e) {
-    console.log("Push error", e);
-  }
-};
+    return matched.length > 0 ? matched.join("\n") : (order.name || "");
+  };
+
+  const sendPushNotification = async (
+    userId,
+    orderId,
+    title = "Narudžba završena",
+    body = "Vaša narudžba je spremna!"
+  ) => {
+    try {
+      const tokenRef = child(
+        child(child(rootRestoran(), N.USERS_RESTORAN), userId),
+        "fcmToken"
+      );
+
+      const tokenSnap = await get(tokenRef);
+      const token = tokenSnap.val();
+
+      if (!token) {
+        console.log("Nema FCM tokena za usera:", userId);
+        return;
+      }
+
+      const res = await fetch(
+        "https://fcm-server-topaz.vercel.app/api/sendOrderNotification",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            token,
+            title,
+            body,
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const text = await res.text();
+        console.log("Push failed:", text);
+      }
+    } catch (e) {
+      console.log("Push error", e);
+    }
+  };
 
 
 
@@ -257,18 +296,52 @@ const vibrate = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const unsub = onValue(deletedOrdersRestoran(), (snap) => {
+      const archived = [];
+      snap.forEach((userSnap) => {
+        userSnap.forEach((orderSnap) => {
+          const value = orderSnap.val();
+          if (!value || typeof value !== "object") return;
+          archived.push({
+            ...value,
+            orderId: value.orderId || orderSnap.key,
+            orderById: value.orderById || userSnap.key,
+            archived: true,
+          });
+        });
+      });
+      archived.sort((a, b) => orderTimestamp(a) - orderTimestamp(b));
+      setDeletedOrders(archived);
+      setSelectedOrder((current) => current?.archived
+        ? archived.find((order) => order.orderId === current.orderId) || null
+        : current);
+    });
+    return () => unsub();
+  }, []);
+
   const parseCustomTime = (str) => {
     if (!str) return null;
 
     try {
-      const [time, date] = str.split(" ");
-      const [h, m, s] = time.split(":");
+      const parts = String(str).trim().split(/\s+/);
+      if (parts.length < 2) return null;
+      const [time, date] = parts;
+      const [h, m, s = "00"] = time.split(":");
       const [d, mo, y] = date.split("-");
 
-      return new Date(y, mo - 1, d, h, m, s);
+      if (![h, m, s, d, mo, y].every((part) => /^\d+$/.test(part || ""))) return null;
+      const parsed = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(m), Number(s));
+      if (Number.isNaN(parsed.getTime())) return null;
+      return parsed;
     } catch {
       return null;
     }
+  };
+
+  const orderTimestamp = (order) => {
+    const timestamp = parseCustomTime(order?.time)?.getTime();
+    return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
   };
 
   const getClockTime = (str) => {
@@ -305,10 +378,52 @@ const getWaitMinutes = (order, nowTs) => {
   const getOrderItems = (order) => {
     const names = String(order?.name || "").split(/\r?\n/);
     const descriptions = String(order?.description || "").split(/\r?\n/);
+    const types = Array.isArray(order?.itemTypes) ? order.itemTypes : [];
     return names.map((name, index) => ({
       name: name.trim(),
       description: String(descriptions[index] || "").trim(),
+      department: types.length === 0 || types[index] !== "drinks" ? "food" : "drinks",
     })).filter((item) => item.name || item.description);
+  };
+
+  const getOrderItemGroups = (order, firstDepartment) => {
+    const items = getOrderItems(order);
+    const first = firstDepartment === "drinks" ? "drinks" : "food";
+    const second = first === "food" ? "drinks" : "food";
+    return [first, second].map((department) => ({
+      department,
+      items: items.filter((item) => item.department === department),
+    })).filter((group) => group.items.length > 0);
+  };
+
+  const filterOrderForDepartment = (order, department) => {
+    if (order?.deleted === true) return null;
+    if ((department === "food" && order?.foodCompleted === true) ||
+        (department === "drinks" && order?.drinkCompleted === true)) {
+      const types = Array.isArray(order?.itemTypes) ? order.itemTypes : [];
+      const hasFood = types.length === 0 || types.some((type) => type !== "drinks");
+      const hasDrinks = types.some((type) => type === "drinks");
+      const allDepartmentsComplete = (!hasFood || order?.foodCompleted === true) &&
+        (!hasDrinks || order?.drinkCompleted === true);
+      const finalizationDepartment = order?.finalizationDepartment ||
+        (hasFood ? "food" : "drinks");
+      if (!allDepartmentsComplete || department !== finalizationDepartment) return null;
+    }
+    const types = Array.isArray(order?.itemTypes) ? order.itemTypes : [];
+    const names = String(order?.name || "").split(/\r?\n/);
+    const descriptions = String(order?.description || "").split(/\r?\n/);
+    const indices = names.map((_, index) => index).filter((index) => {
+      const type = types.length === 0 ? "food" : (types[index] === "drinks" ? "drinks" : "food");
+      return type === department;
+    });
+    if (!indices.length) return null;
+    return {
+      ...order,
+      department,
+      name: indices.map((index) => names[index]).join("\n"),
+      description: indices.map((index) => descriptions[index] || "").join("\n"),
+      itemTypes: indices.map((index) => types[index] || "food"),
+    };
   };
   
   const parseOrderPrice = (price) => {
@@ -364,13 +479,16 @@ const getWaitMinutes = (order, nowTs) => {
       });
 
       arr.sort((a, b) => {
-        const ta = parseCustomTime(a.time)?.getTime() || 0;
-        const tb = parseCustomTime(b.time)?.getTime() || 0;
-
-        return ta - tb;
+        return orderTimestamp(a) - orderTimestamp(b);
       });
 
       const serialized = JSON.stringify(arr);
+
+      console.info("[KITCHEN_ORDERS] snapshot", {
+        total: snap.size,
+        pending: arr.length,
+        readyForFinalization: arr.filter((order) => order.finalizationState === "ready").length,
+      });
 
       if (lastOrdersRef.current === serialized) return;
 	  
@@ -380,11 +498,55 @@ const getWaitMinutes = (order, nowTs) => {
 
       lastOrdersRef.current = serialized;
 
+      const currentIds = new Set(arr.map((o) => o.orderId));
+      if (isInitialWebOrdersRef.current) {
+        knownWebOrdersRef.current = currentIds;
+        isInitialWebOrdersRef.current = false;
+      } else {
+        const newOrders = arr.filter((o) => !knownWebOrdersRef.current.has(o.orderId));
+        knownWebOrdersRef.current = currentIds;
+        if (newOrders.length > 0) {
+          let anyFood = false;
+          let anyDrinks = false;
+          for (const no of newOrders) {
+            const types = Array.isArray(no.itemTypes) ? no.itemTypes : [];
+            const hasF = types.length === 0 || types.some((t) => t !== "drinks");
+            const hasD = types.some((t) => t === "drinks");
+            if (hasF) anyFood = true;
+            if (hasD) anyDrinks = true;
+          }
+          if (anyFood) {
+            setKitchenFlash(true);
+            setTimeout(() => setKitchenFlash(false), 1000);
+            if (userRole === "Kuhinja") {
+              setSelectedDepartment("food");
+              setShowDeletedOrders(false);
+              setSelectedOrder(null);
+            }
+          }
+          if (anyDrinks) {
+            setBarFlash(true);
+            setTimeout(() => setBarFlash(false), 1000);
+            if (userRole === "Sank") {
+              setSelectedDepartment("drinks");
+              setShowDeletedOrders(false);
+              setSelectedOrder(null);
+            }
+          }
+        }
+      }
+
       setOrders(arr);
       setSelectedOrder((current) => {
         if (!current) return current;
-        return arr.find((order) => order.orderId === current.orderId) || current;
+        const matching = arr.find((order) => order.orderId === current.orderId);
+        if (!matching) return null;
+        return current.archived ? matching
+          : { ...matching, department: current.department || selectedDepartment };
       });
+    }, (error) => {
+      console.error("[KITCHEN_ORDERS] Firebase listener cancelled", error);
+      showToast("Ne mogu učitati narudžbe iz baze. Provjerite vezu i pristup.");
     });
 
     return () => unsub();
@@ -394,14 +556,16 @@ const getWaitMinutes = (order, nowTs) => {
   const DELETION_QUEUE_KEY = "kitchenDeletionQueue";
   const retryTimerRef = useRef(null);
   const activeCompletionRef = useRef(false);
+  const completionRetryAttemptRef = useRef(0);
   const deletionRetryTimerRef = useRef(null);
   const activeDeletionRef = useRef(false);
+  const deletionRetryAttemptRef = useRef(0);
 
   const getWebClientId = () => {
-    let id = localStorage.getItem("kitchenWebClientId");
+    let id = sessionStorage.getItem("kitchenWebClientId");
     if (!id) {
       id = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      localStorage.setItem("kitchenWebClientId", id);
+      sessionStorage.setItem("kitchenWebClientId", id);
     }
     return id;
   };
@@ -431,62 +595,101 @@ const getWaitMinutes = (order, nowTs) => {
     localStorage.setItem(DELETION_QUEUE_KEY, JSON.stringify(queue));
 
   const lockTokenFor = (orderId) => `LOCK:${orderId}:WEB:${getWebClientId()}`;
+  const uniqueLockAttemptToken = (baseToken) => {
+    const attemptId = globalThis.crypto?.randomUUID?.() ||
+      `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return `${baseToken}:ATTEMPT:${attemptId}`;
+  };
+  const LOCK_LEASE_FIELD = "GlobalLockUpdatedAt";
+  const LOCK_LEASE_MILLIS = 15 * 1000;
 
   const acquireOwnedLock = async (lockRef, token) => {
-    const tx = await runTransaction(lockRef, (current) => {
-      const value = current == null ? null : String(current);
-      if (value == null || value.toLowerCase() === "false" || value === token) return token;
+    const lockField = lockRef.key;
+    const tx = await runTransaction(lockRef.parent, (current) => {
+      const state = current && typeof current === "object" ? current : {};
+      const value = state[lockField] == null ? null : String(state[lockField]);
+      const leaseAt = Number(state[LOCK_LEASE_FIELD]) || 0;
+      const now = Date.now();
+      const available = value == null || value.toLowerCase() === "false";
+      const owned = value === token;
+      const expired = leaseAt > 0 && now - leaseAt > LOCK_LEASE_MILLIS;
+
+      if (available || owned || expired) {
+        return { ...state, [lockField]: token, [LOCK_LEASE_FIELD]: now };
+      }
+      if (leaseAt === 0) {
+        // Start a lease clock for a lock left by an older app version.
+        return { ...state, [LOCK_LEASE_FIELD]: now };
+      }
       return;
     });
-    return tx.committed;
+    return tx.committed && tx.snapshot.child(lockField).val() === token;
   };
 
-  const releaseOwnedLock = async (lockRef, token, replacement = null) => {
-    await runTransaction(lockRef, (current) =>
-      String(current) === token ? replacement : undefined
-    );
+  const releaseOwnedLock = async (lockRef, token, replacement = "False") => {
+    try {
+      const lockField = lockRef.key;
+      await runTransaction(lockRef.parent, (current) => {
+        const state = current && typeof current === "object" ? current : {};
+        if (String(state[lockField]) !== token) return;
+        return { ...state, [lockField]: replacement, [LOCK_LEASE_FIELD]: null };
+      });
+    } catch (e) {
+      console.warn("Greška pri oslobađanju locka:", e);
+    }
   };
 
   const processDeletionJob = async (job) => {
-    const { orderId, userId, token } = job;
-    const perOrderRef = transactionLockRef(orderId);
-    let lockAttempted = false;
+    const { orderId, userId } = job;
+    const token = uniqueLockAttemptToken(`${job.token}:${getWebClientId()}`);
+    const globalRef = globalLockRef();
+    let lockAcquired = false;
+    let lockReleasedByCommit = false;
 
     try {
       const archivedRef = deletedOrderRef(userId, orderId);
-      if ((await get(archivedRef)).exists()) return "done";
+      if ((await get(archivedRef)).exists()) {
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+        return "done";
+      }
 
-      lockAttempted = true;
-      if (!(await acquireOwnedLock(perOrderRef, token))) return "retry";
+      lockAcquired = true;
+      if (!(await acquireOwnedLock(globalRef, token))) return "retry";
 
-      const [orderSnap, archivedSnap] = await Promise.all([
-        get(orderRef(orderId)),
-        get(archivedRef),
-      ]);
-      if (archivedSnap.exists()) return "done";
-      if (!orderSnap.exists()) return "review";
-
-      const order = orderSnap.val();
-      if (!order || order.orderId !== orderId || order.orderById !== userId ||
-          String(order.status || "").toLowerCase() !== "pending") return "review";
+      const claim = await runTransaction(orderRef(orderId), (order) => {
+        if (!order || order.orderId !== orderId || order.orderById !== userId ||
+            String(order.status || "").toLowerCase() !== "pending" ||
+            order.finalizationState === "ready") return undefined;
+        return { ...order, deleted: true };
+      });
+      if (!claim.committed || !claim.snapshot.exists()) {
+        return (await get(archivedRef)).exists() ? "done" : "review";
+      }
 
       const updates = {
-        [deletedOrderPath(userId, orderId)]: order,
+        [deletedOrderPath(userId, orderId)]: claim.snapshot.val(),
         [`${N.ORDERS_RESTORAN}/${orderId}`]: null,
         [`${N.TRANSACTION_LOCKS_RESTORAN}/${orderId}`]: null,
+        [`${N.TOTAL_PRICE_RESTORAN}/${N.GLOBAL_LOCK}`]: "False",
+        [`${N.TOTAL_PRICE_RESTORAN}/GlobalLockUpdatedAt`]: null,
       };
       await update(rootRestoran(), updates);
+      lockAcquired = false;
       return "done";
     } catch (error) {
       console.error("Greška pri arhiviranju obrisane narudžbe", error);
       return "retry";
     } finally {
-      if (lockAttempted) await releaseOwnedLock(perOrderRef, token).catch(console.error);
+      if (lockAcquired && !lockReleasedByCommit) {
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+      }
     }
   };
 
   const processNextDeletion = async () => {
     if (activeDeletionRef.current || !canDelete) return;
+    clearTimeout(deletionRetryTimerRef.current);
+    deletionRetryTimerRef.current = null;
     const queue = getDeletionQueue();
     const job = queue[0];
     if (!job) return;
@@ -498,6 +701,7 @@ const getWaitMinutes = (order, nowTs) => {
     setDeletingOrderId(null);
 
     if (result === "done" || result === "review") {
+      deletionRetryAttemptRef.current = 0;
       saveDeletionQueue(queue.filter((item) => item.orderId !== job.orderId));
       if (result === "done") {
         setSelectedOrder(null);
@@ -514,46 +718,126 @@ const getWaitMinutes = (order, nowTs) => {
         ? "Arhiviranje će se automatski ponoviti."
         : "Brisanje je sačuvano; čeka internet.");
       clearTimeout(deletionRetryTimerRef.current);
-      deletionRetryTimerRef.current = setTimeout(processNextDeletion, 10000);
+      const delay = Math.min(1000 * (2 ** deletionRetryAttemptRef.current), 10000);
+      deletionRetryAttemptRef.current = Math.min(deletionRetryAttemptRef.current + 1, 4);
+      deletionRetryTimerRef.current = setTimeout(() => {
+        deletionRetryTimerRef.current = null;
+        processNextDeletion();
+      }, delay);
     }
     if (getDeletionQueue().length > 0 && result !== "retry") processNextDeletion();
   };
 
   const processCompletionJob = async (job) => {
-    const { orderId, userId, token } = job;
+    const { orderId, userId } = job;
+    const token = uniqueLockAttemptToken(`${job.token}:${getWebClientId()}`);
+    const department = job.department === "drinks" ? "drinks" : "food";
+    const completedField = department === "food" ? "foodCompleted" : "drinkCompleted";
     const globalRef = globalLockRef();
-    const perOrderRef = transactionLockRef(orderId);
     let globalAttempted = false;
-    let orderAttempted = false;
+    let locksReleasedByCommit = false;
 
     try {
       const completedRef = completeOrderRef(userId, orderId);
       if ((await get(completedRef)).exists()) {
-        await releaseOwnedLock(perOrderRef, token);
-        await releaseOwnedLock(globalRef, token, "False");
         return "done";
       }
 
       const initialSnap = await get(orderRef(orderId));
-      if (!initialSnap.exists()) return "review";
+      if (!initialSnap.exists() || initialSnap.val()?.deleted === true) {
+        if ((await get(completedRef)).exists()) return "done";
+        return "not_found";
+      }
       const initialOrder = initialSnap.val();
       const initialPrice = Number(String(initialOrder?.totalPrice ?? "").replace(",", "."));
       if (!initialOrder || initialOrder.orderId !== orderId || !initialOrder.orderById ||
           !Number.isFinite(initialPrice) || initialOrder.orderById !== userId) return "review";
 
+      const marked = await runTransaction(orderRef(orderId), (current) => {
+        if (!current || current.orderId !== orderId || current.orderById !== userId ||
+            String(current.status || "").toLowerCase() !== "pending" || current.deleted === true) return undefined;
+        const types = Array.isArray(current.itemTypes) ? current.itemTypes : [];
+        const hasFood = types.length === 0 || types.some((type) => type !== "drinks");
+        const hasDrinks = types.some((type) => type === "drinks");
+        if ((department === "food" && !hasFood) || (department === "drinks" && !hasDrinks)) return undefined;
+        current[completedField] = true;
+        current[`${department}CompletedBy`] = currentUser?.ime || currentUser?.name || userId;
+        if ((!hasFood || current.foodCompleted === true) &&
+            (!hasDrinks || current.drinkCompleted === true)) {
+          current.finalizationState = "ready";
+          current.finalizationDepartment = department;
+        }
+        return current;
+      });
+      if (!marked.committed || !marked.snapshot.exists()) {
+        if ((await get(completedRef)).exists()) return "done";
+        return "review";
+      }
+      const markedOrder = marked.snapshot.val();
+      const markedTypes = Array.isArray(markedOrder.itemTypes) ? markedOrder.itemTypes : [];
+      const markedHasFood = markedTypes.length === 0 || markedTypes.some((type) => type !== "drinks");
+      const markedHasDrinks = markedTypes.some((type) => type === "drinks");
+      if ((markedHasFood && markedOrder.foodCompleted !== true) ||
+          (markedHasDrinks && markedOrder.drinkCompleted !== true)) return "partial";
+
+      // Obje stavke su završene - slijedi finalizacija
       globalAttempted = true;
-      if (!(await acquireOwnedLock(globalRef, token))) return "retry";
-      orderAttempted = true;
-      if (!(await acquireOwnedLock(perOrderRef, token))) return "retry";
+      let lockAcquired = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if ((await get(completedRef)).exists()) return "done";
+        if (await acquireOwnedLock(globalRef, token)) {
+          lockAcquired = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
 
-      if ((await get(completedRef)).exists()) return "done";
+      if (!lockAcquired) {
+        if ((await get(completedRef)).exists()) return "done";
+        return "retry";
+      }
 
-      const orderSnap = await get(orderRef(orderId));
-      if (!orderSnap.exists()) return "review";
-      const order = orderSnap.val();
-      const orderPrice = Number(String(order?.totalPrice ?? "").replace(",", "."));
-      if (!order || order.orderId !== orderId || !order.orderById ||
-          !Number.isFinite(orderPrice) || order.orderById !== userId) return "review";
+      if ((await get(completedRef)).exists()) {
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+        locksReleasedByCommit = true;
+        return "done";
+      }
+
+      const finalSnap = await get(orderRef(orderId));
+      if (!finalSnap.exists() || finalSnap.val()?.deleted === true) {
+        if ((await get(completedRef)).exists()) {
+          await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+          locksReleasedByCommit = true;
+          return "done";
+        }
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+        return "not_found";
+      }
+      const finalOrder = finalSnap.val();
+      if (!finalOrder || finalOrder.orderId !== orderId || finalOrder.orderById !== userId) {
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+        return "review";
+      }
+      const finalTypes = Array.isArray(finalOrder.itemTypes) ? finalOrder.itemTypes : [];
+      const hasFood = finalTypes.length === 0 || finalTypes.some((type) => type !== "drinks");
+      const hasDrinks = finalTypes.some((type) => type === "drinks");
+      if ((hasFood && finalOrder.foodCompleted !== true) ||
+          (hasDrinks && finalOrder.drinkCompleted !== true)) {
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+        const pushTitle = department === "drinks"
+          ? "ŠANK je završio narudžbu"
+          : "KUHINJA je završila narudžbu";
+        const pushBody = getDepartmentItemNames(finalOrder, department);
+        sendPushNotification(userId, orderId, pushTitle, pushBody).catch((error) =>
+          console.error("Push notifikacija nije poslata", error)
+        );
+        return "partial";
+      }
+      const orderPrice = Number(String(finalOrder.totalPrice ?? "").replace(",", "."));
+      if (!Number.isFinite(orderPrice) || orderPrice < 0) {
+        await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+        return "review";
+      }
 
       const now = new Date();
       const yearKey = String(now.getFullYear());
@@ -561,7 +845,6 @@ const getWaitMinutes = (order, nowTs) => {
       const dayKey = String(now.getDate()).padStart(2, "0");
       const monthSummaryKey = `${yearKey}-${monthKey}`;
       const dateKey = `${yearKey}/${monthKey}/${dayKey}`;
-      const totalsRef = totalRestoranRef().parent;
       const waiterDayRef = child(waiterMonthStatistics(userId, yearKey, monthKey), dayKey);
       const monthStatsRef = child(mjeseciRestoran(), monthSummaryKey);
       const [totalRestSnap, firstSnap, secondSnap, waiterSnap, monthSnap] = await Promise.all([
@@ -577,12 +860,14 @@ const getWaitMinutes = (order, nowTs) => {
       const pad = (n) => String(n).padStart(2, "0");
       const timestamp = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()} ${pad(hour)}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
       const orderDetails = {
-        orderId, user_Id: userId, addittionalInfo: order.addittionalInfo || "",
-        orderPersonName: order.orderPersonName || "", name: order.name || "",
+        orderId, user_Id: userId, addittionalInfo: finalOrder.addittionalInfo || "",
+        orderPersonName: finalOrder.orderPersonName || "", name: finalOrder.name || "",
         orderCompletedBy: currentUser?.ime || currentUser?.name || "Web Kuhinja",
-        description: order.description || "", totalPrice: order.totalPrice,
+        description: finalOrder.description || "", totalPrice: finalOrder.totalPrice,
         status: `Complete ${timestamp}`, notificationSatus: "true",
-        VrijemeNarucivanja: order.time || "",
+        VrijemeNarucivanja: finalOrder.time || "",
+        itemTypes: Array.isArray(finalOrder.itemTypes) ? finalOrder.itemTypes : [],
+        foodCompleted: true, drinkCompleted: true,
       };
 
       const updates = {
@@ -594,23 +879,33 @@ const getWaitMinutes = (order, nowTs) => {
         [`${N.STATISTICS}/${N.KONOBARI}/${userId}/${dateKey}/totalOrders`]: (number(waiterSnap.val()?.totalOrders) + 1),
         [`${N.STATISTICS}/${N.MJESECI_RESTORAN}/${monthSummaryKey}`]: (number(monthSnap.val()) + orderPrice).toFixed(2),
         [`${N.ORDERS_RESTORAN}/${orderId}`]: null,
-        [`${N.TRANSACTION_LOCKS_RESTORAN}/${orderId}`]: null,
+        // 🔥 ATOMSKI UPIS SVIH PODATAKA I OSLOBAĐANJE LOCKA U ISTOM MREŽNOM POZIVU
         [`${N.TOTAL_PRICE_RESTORAN}/${N.GLOBAL_LOCK}`]: "False",
+        [`${N.TOTAL_PRICE_RESTORAN}/GlobalLockUpdatedAt`]: null,
       };
       await update(rootRestoran(), updates);
-      await sendPushNotification(userId, orderId);
+      locksReleasedByCommit = true;
+      sendPushNotification(
+        userId,
+        orderId,
+        "Narudžba završena",
+        finalOrder.name || "Vaša narudžba je spremna!"
+      ).catch((error) =>
+        console.error("Push notifikacija nije poslata", error)
+      );
       return "done";
     } catch (error) {
       console.error("Greška pri završavanju narudžbe", error);
       return "retry";
     } finally {
-      if (orderAttempted) await releaseOwnedLock(perOrderRef, token).catch(console.error);
-      if (globalAttempted) await releaseOwnedLock(globalRef, token, "False").catch(console.error);
+      if (globalAttempted && !locksReleasedByCommit) await releaseOwnedLock(globalRef, token, "False").catch(console.error);
     }
   };
 
   const processNextCompletion = async () => {
     if (activeCompletionRef.current || !canComplete) return;
+    clearTimeout(retryTimerRef.current);
+    retryTimerRef.current = null;
     const queue = getCompletionQueue();
     const job = queue[0];
     if (!job) return;
@@ -622,7 +917,8 @@ const getWaitMinutes = (order, nowTs) => {
     isProcessingRef.current = false;
     setLoadingOrderId(null);
 
-    if (result === "done" || result === "review") {
+    if (result === "done" || result === "review" || result === "partial" || result === "not_found") {
+      completionRetryAttemptRef.current = 0;
       saveCompletionQueue(queue.filter((item) => item.orderId !== job.orderId));
       if (result === "done") {
         setSelectedOrder(null);
@@ -632,25 +928,49 @@ const getWaitMinutes = (order, nowTs) => {
         setCompletedAnimation(true);
         setTimeout(() => setCompletedAnimation(false), 2000);
         showToast("Narudžba završena");
+      } else if (result === "partial") {
+        setSelectedOrder(null);
+        setShowDeleteConfirm(false);
+        setSuccessAnimationType("issued");
+        setSuccessAnimationTitle("Izdat dio narudžbe");
+        setCompletedAnimation(true);
+        setTimeout(() => setCompletedAnimation(false), 2000);
+      } else if (result === "not_found") {
+        setSelectedOrder(null);
+        setShowDeleteConfirm(false);
+        showToast("Narudžba nije pronađena među aktivnim ni završenim narudžbama.");
       } else {
-        showToast("Narudžba nije sigurna za završavanje. Provjerite podatke.");
+        setSelectedOrder(null);
+        setShowDeleteConfirm(false);
+        showToast("Narudžba nije pronađena među aktivnim ni završenim narudžbama.");
       }
     } else {
       showToast(navigator.onLine ? "Obrada će se automatski ponoviti." : "Narudžba je sačuvana; čeka internet.");
       clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = setTimeout(processNextCompletion, 10000);
+      const delay = Math.min(1000 * (2 ** completionRetryAttemptRef.current), 10000);
+      completionRetryAttemptRef.current = Math.min(completionRetryAttemptRef.current + 1, 4);
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
+        processNextCompletion();
+      }, delay);
     }
     if (getCompletionQueue().length > 0 && result !== "retry") processNextCompletion();
   };
 
   const completeOrder = async (orderItem) => {
     if (!canComplete || !orderItem?.orderId || !orderItem?.orderById) return;
+    if (!orders.some((o) => o.orderId === orderItem.orderId)) {
+      setSelectedOrder(null);
+      showToast("Narudžba nije pronađena među aktivnim ni završenim narudžbama.");
+      return;
+    }
     if (getCompletionQueue().some((job) => job.orderId === orderItem.orderId)) {
       showToast("Narudžba je već na čekanju za završavanje.");
       return;
     }
     const queue = getCompletionQueue();
-    queue.push({ orderId: orderItem.orderId, userId: orderItem.orderById, token: lockTokenFor(orderItem.orderId) });
+    queue.push({ orderId: orderItem.orderId, userId: orderItem.orderById,
+      department: selectedDepartment, token: lockTokenFor(orderItem.orderId) });
     saveCompletionQueue(queue);
     setLoadingOrderId(orderItem.orderId);
     await processNextCompletion();
@@ -658,6 +978,12 @@ const getWaitMinutes = (order, nowTs) => {
 
   useEffect(() => {
     const resume = () => {
+      clearTimeout(retryTimerRef.current);
+      clearTimeout(deletionRetryTimerRef.current);
+      retryTimerRef.current = null;
+      deletionRetryTimerRef.current = null;
+      completionRetryAttemptRef.current = 0;
+      deletionRetryAttemptRef.current = 0;
       processNextCompletion();
       processNextDeletion();
     };
@@ -696,8 +1022,38 @@ const getWaitMinutes = (order, nowTs) => {
   await processNextDeletion();
 };
 
+  const togglePriprema = (e, order) => {
+    e.stopPropagation();
+    if (!order?.orderId || order.archived) return;
+    if (userRole !== "Administrator" && userRole !== "Kuhinja") return;
+
+    const currentVal = String(order.priprema || "0");
+    const nextVal = currentVal === "1" ? "0" : "1";
+
+    update(orderRef(order.orderId), { priprema: nextVal }).catch((err) => {
+      console.error("[TOGGLE_PRIPREMA] Error:", err);
+      showToast("Greška pri ažuriranju statusa pripreme.");
+    });
+  };
+
+
   const isSelected = (id) =>
     selectedOrder?.orderId === id;
+
+  const visibleOrders = showDeletedOrders
+    ? deletedOrders
+    : orders.map((order) => filterOrderForDepartment(order, selectedDepartment)).filter(Boolean);
+  const selectDepartmentTab = (department) => {
+    setSelectedDepartment(department);
+    setShowDeletedOrders(false);
+    setSelectedOrder(null);
+    scrollRef.current?.scrollTo({ top: 0 });
+  };
+  const selectDeletedTab = () => {
+    setShowDeletedOrders(true);
+    setSelectedOrder(null);
+    scrollRef.current?.scrollTo({ top: 0 });
+  };
 
   return (
 <div
@@ -737,7 +1093,7 @@ style={{
           }}
         >
           <ChefHat size={18} />
-          <b>Kuhinja</b>
+          <b>{showDeletedOrders ? "Obrisane narudžbe" : selectedDepartment === "drinks" ? "ŠANK (PIĆE)" : "KUHINJA (HRANA)"}</b>
         </div>
 
         <div
@@ -752,9 +1108,193 @@ fontSize:15,
 boxShadow:"0 8px 20px rgba(255,153,0,.35)"
           }}
         >
-          {orders.length}
+          {visibleOrders.length}
         </div>
       </div>
+
+      {(() => {
+        const kitchenCount = orders.map((o) => filterOrderForDepartment(o, "food")).filter(Boolean).length;
+        const barCount = orders.map((o) => filterOrderForDepartment(o, "drinks")).filter(Boolean).length;
+        const deletedCount = deletedOrders.length;
+        const isKitchenActive = !showDeletedOrders && selectedDepartment === "food";
+        const isBarActive = !showDeletedOrders && selectedDepartment === "drinks";
+        const isDeletedActive = showDeletedOrders;
+
+        return (
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexShrink: 0 }}>
+            {/* TAB 1: KUHINJA */}
+            <button
+              type="button"
+              onClick={() => selectDepartmentTab("food")}
+              style={{
+                flex: 1,
+                position: "relative",
+                padding: "12px 10px",
+                border: kitchenFlash
+                  ? "2px solid #f59e0b"
+                  : isKitchenActive
+                  ? "2px solid #105c49"
+                  : "1.5px solid #d1d5db",
+                borderRadius: 14,
+                fontWeight: 800,
+                fontSize: "14px",
+                color: kitchenFlash || isKitchenActive ? "#ffffff" : "#1e293b",
+                background: kitchenFlash
+                  ? "linear-gradient(135deg, #f59e0b, #d97706)"
+                  : isKitchenActive
+                  ? "linear-gradient(135deg, #105c49, #0d4a3b)"
+                  : "#ffffff",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: kitchenFlash
+                  ? "0 0 20px rgba(245,158,11,0.7)"
+                  : isKitchenActive
+                  ? "0 6px 18px rgba(16,92,73,0.3)"
+                  : "0 2px 6px rgba(0,0,0,0.04)",
+                transition: "all 0.2s ease",
+              }}
+            >
+              <span>Kuhinja</span>
+              <span
+                style={{
+                  position: "absolute",
+                  top: 5,
+                  right: 6,
+                  background: "#e53935",
+                  color: "#ffffff",
+                  borderRadius: "50%",
+                  minWidth: 20,
+                  height: 20,
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "0 4px",
+                  boxShadow: "0 2px 6px rgba(229,57,53,0.4)",
+                  border: "1.5px solid #ffffff",
+                }}
+              >
+                {kitchenCount}
+              </span>
+            </button>
+
+            {/* TAB 2: ŠANK */}
+            <button
+              type="button"
+              onClick={() => selectDepartmentTab("drinks")}
+              style={{
+                flex: 1,
+                position: "relative",
+                padding: "12px 10px",
+                border: barFlash
+                  ? "2px solid #f59e0b"
+                  : isBarActive
+                  ? "2px solid #105c49"
+                  : "1.5px solid #d1d5db",
+                borderRadius: 14,
+                fontWeight: 800,
+                fontSize: "14px",
+                color: barFlash || isBarActive ? "#ffffff" : "#1e293b",
+                background: barFlash
+                  ? "linear-gradient(135deg, #f59e0b, #d97706)"
+                  : isBarActive
+                  ? "linear-gradient(135deg, #105c49, #0d4a3b)"
+                  : "#ffffff",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: barFlash
+                  ? "0 0 20px rgba(245,158,11,0.7)"
+                  : isBarActive
+                  ? "0 6px 18px rgba(16,92,73,0.3)"
+                  : "0 2px 6px rgba(0,0,0,0.04)",
+                transition: "all 0.2s ease",
+              }}
+            >
+              <span>Šank</span>
+              <span
+                style={{
+                  position: "absolute",
+                  top: 5,
+                  right: 6,
+                  background: "#e53935",
+                  color: "#ffffff",
+                  borderRadius: "50%",
+                  minWidth: 20,
+                  height: 20,
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "0 4px",
+                  boxShadow: "0 2px 6px rgba(229,57,53,0.4)",
+                  border: "1.5px solid #ffffff",
+                }}
+              >
+                {barCount}
+              </span>
+            </button>
+
+            {/* TAB 3: OTKAZANE */}
+            <button
+              type="button"
+              onClick={selectDeletedTab}
+              style={{
+                flex: 1,
+                position: "relative",
+                padding: "12px 10px",
+                border: isDeletedActive
+                  ? "2px solid #b42323"
+                  : "1.5px solid #d1d5db",
+                borderRadius: 14,
+                fontWeight: 800,
+                fontSize: "14px",
+                color: isDeletedActive ? "#ffffff" : "#991b1b",
+                background: isDeletedActive
+                  ? "linear-gradient(135deg, #b42323, #991b1b)"
+                  : "#ffffff",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                boxShadow: isDeletedActive
+                  ? "0 6px 18px rgba(180,35,35,0.3)"
+                  : "0 2px 6px rgba(0,0,0,0.04)",
+                transition: "all 0.2s ease",
+              }}
+            >
+              <span>Otkazane</span>
+              <span
+                style={{
+                  position: "absolute",
+                  top: 5,
+                  right: 6,
+                  background: "#e53935",
+                  color: "#ffffff",
+                  borderRadius: "50%",
+                  minWidth: 20,
+                  height: 20,
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "0 4px",
+                  boxShadow: "0 2px 6px rgba(229,57,53,0.4)",
+                  border: "1.5px solid #ffffff",
+                }}
+              >
+                {deletedCount}
+              </span>
+            </button>
+          </div>
+        );
+      })()}
 
     <div
 ref={scrollRef}
@@ -769,26 +1309,33 @@ style={{
   gap: 12,
 }}
 >
-        {orders.map((order) => (
+        {visibleOrders.map((order) => (
           <div
             key={order.orderId}
-            onClick={() => setSelectedOrder(order)}
+            onClick={() => {
+              const sourceOrder = order.archived
+                ? order
+                : orders.find((source) => source.orderId === order.orderId) || order;
+              setSelectedOrder({ ...sourceOrder, department: selectedDepartment });
+            }}
           style={{
-    background: "#fff",
+    background: order.archived ? "#fff0f0" : String(order.priprema) === "1" ? "#fafffb" : "#fff",
     borderRadius: 22,
     padding: 18,
     cursor: "pointer",
     transition: ".25s",
     border: isSelected(order.orderId)
         ? "2px solid #2563eb"
-        : "1px solid #e6eaf0",
+        : order.archived ? "1px solid #ef9a9a" : String(order.priprema) === "1" ? "1.5px solid #86efac" : "1px solid #e6eaf0",
     boxShadow: isSelected(order.orderId)
         ? "0 15px 35px rgba(37,99,235,.18)"
+        : String(order.priprema) === "1"
+        ? "0 8px 24px rgba(34,197,94,.12)"
         : "0 6px 18px rgba(0,0,0,.05)",
 }}
           >
             
-<div
+  <div
   style={{
     display: "flex",
     justifyContent: "space-between",
@@ -804,6 +1351,7 @@ style={{
   >
     {order.orderPersonName}
   </div>
+  {order.archived && <span style={{ padding: "5px 9px", borderRadius: 99, background: "#b42323", color: "#fff", fontSize: 10, fontWeight: 900, letterSpacing: ".04em" }}>OTKAZANO</span>}
 </div>
 
 <div
@@ -874,30 +1422,67 @@ boxShadow:"0 4px 12px rgba(255,193,7,.15)"
 			
 
             <div
-style={{
-marginTop:14,
-display:"inline-flex",
-padding:"6px 14px",
-borderRadius:30,
-fontWeight:700,
-fontSize:13,
-background:
-getWaitMinutes(order,now)>20
-?"#fee2e2"
-:getWaitMinutes(order,now)>10
-?"#fff7cc"
-:"#dcfce7",
+              style={{
+                marginTop: 14,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  display: "inline-flex",
+                  padding: "6px 14px",
+                  borderRadius: 30,
+                  fontWeight: 700,
+                  fontSize: 13,
+                  background:
+                    getWaitMinutes(order, now) > 20
+                      ? "#fee2e2"
+                      : getWaitMinutes(order, now) > 10
+                      ? "#fff7cc"
+                      : "#dcfce7",
+                  color:
+                    getWaitMinutes(order, now) > 20
+                      ? "#dc2626"
+                      : getWaitMinutes(order, now) > 10
+                      ? "#b45309"
+                      : "#15803d",
+                }}
+              >
+                ⏱ {getWaitMinutes(order, now)} min čekanja
+              </div>
 
-color:
-getWaitMinutes(order,now)>20
-?"#dc2626"
-:getWaitMinutes(order,now)>10
-?"#b45309"
-:"#15803d"
-}}
->
-⏱ {getWaitMinutes(order,now)} min čekanja
-</div>
+              {!order.archived && (userRole === "Administrator" || userRole === "Kuhinja") && (
+                <button
+                  type="button"
+                  onClick={(e) => togglePriprema(e, order)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "7px 15px",
+                    borderRadius: 14,
+                    border: 0,
+                    fontWeight: 800,
+                    fontSize: 13,
+                    cursor: "pointer",
+                    transition: "all .2s ease",
+                    color: "#fff",
+                    background:
+                      String(order.priprema) === "1" ? "#147d5b" : "#2757be",
+                    boxShadow:
+                      String(order.priprema) === "1"
+                        ? "0 4px 12px rgba(20,125,91,.25)"
+                        : "0 4px 12px rgba(39,87,190,.25)",
+                  }}
+                >
+                  {String(order.priprema) === "1" ? "✓ U pripremi" : "▶ Počni pripremu"}
+                </button>
+              )}
+            </div>
 
 <div
   style={{
@@ -1007,13 +1592,50 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
 
             <div style={{ marginTop: 14 }}>
               <div style={{ margin: "0 0 8px 2px", color: "#64748b", fontSize: 11, fontWeight: 800, letterSpacing: ".1em" }}>NARUČENI ARTIKLI</div>
-              <div style={{ display: "grid", gap: 8 }}>
-                {getOrderItems(selectedOrder).map((item, index) => (
-                  <div key={`${index}-${item.name}`} style={{ padding: "11px 13px", border: "1px solid #e2eae6", borderRadius: 12, background: "#f8fbf9" }}>
-                    {item.name && <div style={{ color: "#173c32", fontSize: 15, fontWeight: 800, lineHeight: 1.35 }}>{item.name}</div>}
-                    {item.description && <div style={{ marginTop: 4, color: "#64736c", fontSize: 13, lineHeight: 1.45 }}>{item.description}</div>}
-                  </div>
-                ))}
+              <div style={{ display: "grid", gap: 10 }}>
+                {getOrderItemGroups(selectedOrder, selectedOrder.department || selectedDepartment).map((group) => {
+                  const isIssued = group.department === "food"
+                    ? selectedOrder?.foodCompleted === true
+                    : selectedOrder?.drinkCompleted === true;
+
+                  return (
+                    <section key={group.department} style={{ display: "grid", gap: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "3px 0 0 2px" }}>
+                        <span style={{ color: "#38594d", fontSize: 12, fontWeight: 900, letterSpacing: ".08em" }}>
+                          {group.department === "food" ? "HRANA" : "PIĆE"}
+                        </span>
+                        {isIssued && (
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 3,
+                              fontSize: 10,
+                              fontWeight: 900,
+                              letterSpacing: ".06em",
+                              color: "#166534",
+                              background: "#dcfce7",
+                              border: "1.5px solid #22c55e",
+                              borderRadius: 6,
+                              padding: "2px 7px",
+                              lineHeight: 1.2,
+                              boxShadow: "0 1px 2px rgba(22,101,52,0.12)",
+                              transform: "rotate(-2deg)",
+                            }}
+                          >
+                            ✓ IZDATO
+                          </span>
+                        )}
+                      </div>
+                      {group.items.map((item, index) => (
+                        <div key={`${group.department}-${index}-${item.name}`} style={{ padding: "11px 13px", border: "1px solid #e2eae6", borderRadius: 12, background: "#f8fbf9" }}>
+                          {item.name && <div style={{ color: "#173c32", fontSize: 15, fontWeight: 800, lineHeight: 1.35 }}>{item.name}</div>}
+                          {item.description && <div style={{ marginTop: 4, color: "#64736c", fontSize: 13, lineHeight: 1.45 }}>{item.description}</div>}
+                        </div>
+                      ))}
+                    </section>
+                  );
+                })}
               </div>
             </div>
 			
@@ -1093,6 +1715,7 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
     background: "blue",
     color: "white",
     borderRadius: 10,
+    display: selectedOrder.archived ? "none" : "block",
     opacity:
       loadingOrderId === selectedOrder.orderId ? 0.7 : 1,
     cursor:
@@ -1142,6 +1765,7 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
     background: "red",
     color: "white",
     borderRadius: 10,
+    display: selectedOrder.archived ? "none" : "block",
     opacity: !canDelete ? 0.5 : 1,
     cursor: !canDelete ? "not-allowed" : "pointer",
   }}
@@ -1149,7 +1773,7 @@ if (loadingOrderId !== null || deletingOrderId !== null) return;
   Obriši narudžbu
 </button>
 
-            {showDeleteConfirm && (
+            {showDeleteConfirm && !selectedOrder.archived && (
               <div style={{ marginTop: 10 }}>
                 <div
                   style={{

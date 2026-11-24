@@ -514,7 +514,7 @@ shadow-[0_-10px_30px_rgba(0,0,0,0.4)]
   `}
 >
   {sending
-    ? `SAČEKAJTE ${seconds}s`
+    ? (seconds > 0 ? `SAČEKAJTE ${seconds}s` : "ČEKA SE POTVRDA SERVERA")
     : "POTVRDI NARUDŽBU"}
 </button>
 

@@ -292,6 +292,7 @@ export default function Login() {
               <option value="Titula">Izaberi titulu</option>
               <option value="Konobar">Konobar</option>
               <option value="Kuhinja">Kuhinja</option>
+              <option value="Sank">Šank</option>
             </select>
 
             <button

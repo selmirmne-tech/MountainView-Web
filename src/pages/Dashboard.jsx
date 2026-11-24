@@ -335,7 +335,7 @@ Kontaktirajte administratora
         <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ minWidth: 0, display: "grid", gap: 3 }}>
             <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 15 }}>{user?.ime || "Korisnik"}</strong>
-            <span style={{ color: "rgba(255,255,255,.78)", fontSize: 12 }}>{user?.titula || "Nalog"}</span>
+            <span style={{ color: "rgba(255,255,255,.78)", fontSize: 12 }}>{user?.titula === "Sank" ? "Šank" : user?.titula || "Nalog"}</span>
           </div>
         </div>
         <div ref={accountMenuRef} style={{ position: "relative", flex: "0 0 auto" }}>

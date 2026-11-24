@@ -237,6 +237,10 @@ const unsubActiveOrders = onValue(
             `${N.TOTAL_PRICE_RESTORAN}/${N.GLOBAL_LOCK}`
         ] = "False";
 
+        updates[
+            `${N.TOTAL_PRICE_RESTORAN}/GlobalLockUpdatedAt`
+        ] = null;
+
 
         // uvijek briši završene račune
 

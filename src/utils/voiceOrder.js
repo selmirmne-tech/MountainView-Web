@@ -212,6 +212,19 @@ function quantityFor(source, span, item, dynamicSkip, allSpans = [span], used = 
   if (selected) used.add(selected.index);
   return selected;
 }
+function quantityNearSpan(source, span, used = new Set()) {
+  let found = null; let bestDistance = Infinity;
+  source.forEach((entry, index) => {
+    if (used.has(index) || !isNumber(entry.value) || isMeasure(entry.value)) return;
+    const distance = index < span.start ? span.start - index : index > span.end ? index - span.end : 0;
+    if (!distance || distance > 2 || (index > span.end && distance > 1)) return;
+    const value = Number(entry.value);
+    if (value < 1 || value > 99) return;
+    if (distance < bestDistance) { found = { index, value }; bestDistance = distance; }
+  });
+  if (found) used.add(found.index);
+  return found?.value || 1;
+}
 function isAllowedExtra(value) {
   return isNumber(value) || isMeasure(value) || IGNORED.has(value) || CONNECTORS.has(value) || UNIT_WORDS.has(value) || COMMANDS.has(value);
 }
@@ -271,6 +284,8 @@ export function resolveVoiceOrder(transcript, menu) {
 
   const matchedSpans = [];
   const consumedHeard = new Set();
+  const unresolvedTerms = [];
+  let unresolvedSpan = null;
   let cursor = 0;
   while (cursor < heard.length) {
     const candidates = [];
@@ -287,28 +302,45 @@ export function resolveVoiceOrder(transcript, menu) {
       }
     }
     candidates.sort((a, b) => b.score - a.score);
-    if (!candidates.length) { cursor += 1; continue; }
+    if (!candidates.length) {
+      const entry = heard[cursor];
+      unresolvedTerms.push(entry.value);
+      if (!unresolvedSpan) unresolvedSpan = { start: entry.sourceIndex, end: entry.sourceIndex };
+      cursor += 1;
+      continue;
+    }
     const top = candidates[0];
     const tied = candidates.filter((entry) => top.score - entry.score <= 0.06);
     const span = { start: heard[cursor].sourceIndex, end: heard[cursor + top.length - 1].sourceIndex };
-    if (tied.length > 1 || top.score < 0.80) return { matches: [], suggestions: suggest(heard.slice(cursor, cursor + top.length).map((entry) => entry.value), candidates.slice(0, 8).map((entry) => entry.item)) };
+    if (tied.length > 1 || top.score < 0.80) {
+      unresolvedTerms.push(...heard.slice(cursor, cursor + top.length).map((entry) => entry.value));
+      if (!unresolvedSpan) unresolvedSpan = span;
+      cursor += top.length;
+      continue;
+    }
     for (let index = cursor; index < cursor + top.length; index += 1) consumedHeard.add(index);
     matchedSpans.push({ item: top.item, span });
     cursor += top.length;
   }
   const unmatchedTerms = heard.filter((_, index) => !consumedHeard.has(index)).map((entry) => entry.value);
-  if (unmatchedTerms.length) return { matches: [], suggestions: suggest(unmatchedTerms, menu) };
+  for (const term of unmatchedTerms) if (!unresolvedTerms.includes(term)) unresolvedTerms.push(term);
   const matches = [];
   const usedQuantities = new Set();
   for (const match of matchedSpans) {
     const quantity = quantityFor(source, match.span, match.item, dynamicSkip,
       matchedSpans.map((entry) => entry.span), usedQuantities);
     const amount = quantity?.value || 1;
-    const existing = matches.find((entry) => entry.item.id === match.item.id);
+    const existing = matches.find((entry) => entry.item === match.item || (entry.item.id != null && entry.item.id === match.item.id));
     if (existing) existing.quantity = Math.min(99, existing.quantity + amount);
     else matches.push({ item: match.item, quantity: amount });
   }
-  return { matches, suggestions: matches.length ? [] : suggest(heard.map((entry) => entry.value), menu) };
+  const suggestionQuantity = unresolvedSpan ? quantityNearSpan(source, unresolvedSpan, usedQuantities) : 1;
+  return {
+    matches,
+    suggestions: unresolvedTerms.length ? suggest(unresolvedTerms, menu) : (matches.length ? [] : suggest(heard.map((entry) => entry.value), menu)),
+    suggestionQuantity,
+    unresolvedTerms,
+  };
 }
 
 

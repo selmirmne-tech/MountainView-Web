@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { child, get, onValue, push, set, remove} from "firebase/database";
-import { menuRestoran, ordersRestoran } from "../firebase/refs";
+import { child, get, onValue, runTransaction } from "firebase/database";
+import { completeOrderRef, menuRestoran, ordersRestoran } from "../firebase/refs";
 import * as N from "../firebase/nodes";
 import CartModal from "../components/CartModal";
 import { Check, Mic, Minus, Plus, RotateCcw, X } from "lucide-react";
@@ -13,6 +13,45 @@ const MENU_DISPLAY_CACHE_KEY = "restoran_menu_display";
 const menuVersion = (value) => {
   const match = String(value || "").match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})/);
   return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])).getTime() : 0;
+};
+
+const makeOrderId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  if (bytes.some((value) => value !== 0)) {
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+};
+
+const waitForBrowserOnline = () => new Promise((resolve) => {
+  if (navigator.onLine) {
+    resolve();
+    return;
+  }
+  const onOnline = () => {
+    if (!navigator.onLine) return;
+    window.removeEventListener("online", onOnline);
+    resolve();
+  };
+  window.addEventListener("online", onOnline);
+  // Close the small race where connectivity returned while the listener was added.
+  if (navigator.onLine) onOnline();
+});
+
+const isTemporaryNetworkError = (error) => {
+  if (!navigator.onLine) return true;
+  const text = `${error?.code || ""} ${error?.message || error || ""}`.toLowerCase();
+  return /network|offline|disconnected|unavailable|timed? ?out|timeout/.test(text);
+};
+
+const sameOrderPayload = (existing, intended) => {
+  if (!existing || existing.orderId !== intended.orderId ||
+      existing.orderById !== intended.orderById) return false;
+  const fields = ["orderPersonName", "totalPrice", "name", "description", "addittionalInfo", "status"];
+  if (fields.some((field) => String(existing[field] ?? "") !== String(intended[field] ?? ""))) return false;
+  return JSON.stringify(existing.itemTypes || []) === JSON.stringify(intended.itemTypes || []);
 };
 
 const readCurrentMenu = (data, menuNode = "Podaci") => {
@@ -45,6 +84,7 @@ const navigate = useNavigate();
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceError, setVoiceError] = useState("");
   const [voiceSuggestions, setVoiceSuggestions] = useState(null);
+  const [voiceSelectedCandidateId, setVoiceSelectedCandidateId] = useState(null);
   const [voiceCandidateQuantities, setVoiceCandidateQuantities] = useState({});
   const [voiceSuccess, setVoiceSuccess] = useState([]);
 
@@ -73,6 +113,8 @@ const voiceRetryTimerRef = useRef(null);
 const voiceSuccessTimerRef = useRef(null);
 const voiceCanceledRef = useRef(false);
 const voiceAudioContextRef = useRef(null);
+const sendingGuardRef = useRef(false);
+const pendingOrderAttemptRef = useRef(null);
 
 useEffect(() => () => {
   window.clearTimeout(voiceRetryTimerRef.current);
@@ -519,7 +561,7 @@ const openCart = () => {
   // ==========================
 
 
-  const addVoiceMatches = (matches) => {
+  const addVoiceMatches = (matches, { showSuccess = true } = {}) => {
   if (!matches?.length) return;
   const added = matches.map(({ item, quantity }) => ({
     item,
@@ -536,9 +578,14 @@ const openCart = () => {
   });
   setVoiceSuggestions(null);
   setVoicePanelOpen(false);
-  setVoiceSuccess(added.map(({ item, quantity }) => ({ name: item.name, quantity })));
-  window.clearTimeout(voiceSuccessTimerRef.current);
-  voiceSuccessTimerRef.current = window.setTimeout(() => setVoiceSuccess([]), 2050);
+  if (showSuccess) {
+    setVoiceSuccess(added.map(({ item, quantity }) => ({ name: item.name, quantity })));
+    window.clearTimeout(voiceSuccessTimerRef.current);
+    voiceSuccessTimerRef.current = window.setTimeout(() => setVoiceSuccess([]), 2050);
+  } else {
+    window.clearTimeout(voiceSuccessTimerRef.current);
+    setVoiceSuccess([]);
+  }
 };
 
 const processVoiceTranscript = (transcript) => {
@@ -547,17 +594,17 @@ const processVoiceTranscript = (transcript) => {
   setVoiceTranscript(text);
   voiceTranscriptRef.current = text;
   const resolved = resolveVoiceOrder(text, menu);
-  if (resolved.matches.length) {
-    addVoiceMatches(resolved.matches);
-    return;
-  }
+  if (resolved.matches.length) addVoiceMatches(resolved.matches, { showSuccess: !resolved.suggestions.length });
   if (resolved.suggestions.length) {
-    const candidates = resolved.suggestions.map(({ item }) => ({ item, quantity: inferVoiceQuantity(text, item) }));
-    setVoiceCandidateQuantities(Object.fromEntries(candidates.map(({ item, quantity }) => [item.id, quantity])));
-    setVoiceSuggestions({ transcript: text, items: candidates });
+    const quantity = Math.max(1, Math.min(99, Number(resolved.suggestionQuantity) || inferVoiceQuantity(text)));
+    const candidates = resolved.suggestions.map(({ item }) => ({ item, quantity }));
+    setVoiceCandidateQuantities(Object.fromEntries(candidates.map(({ item }) => [item.id, quantity])));
+    setVoiceSelectedCandidateId(null);
+    setVoiceSuggestions({ transcript: resolved.unresolvedTerms?.join(" ") || text, items: candidates, recognized: resolved.matches || [] });
     setVoicePanelOpen(false);
     return;
   }
+  if (resolved.matches.length) return;
   setVoicePanelOpen(true);
   setVoiceError("Nisam pronašao taj artikal. Izgovori makar jednu riječ iz naziva artikla.");
   setVoiceListening(false);
@@ -784,7 +831,7 @@ prev.filter(itemId=>itemId !== id)
  
 const confirmOrder = async () => {
 
-    if (sending) return;
+    if (sending || sendingGuardRef.current) return;
 
 
     // PROVJERA PRAZNE KORPE
@@ -824,12 +871,45 @@ const confirmOrder = async () => {
         alert("Neispravna ukupna cijena.");
         return;
     }
+
+    const signatureItems = items.map((item) => ({
+        name: String(item.name || ""),
+        description: String(item.description || ""),
+        qty: Number(item.qty),
+        price: Number(item.price).toFixed(2),
+        menuType: item.menuType === "drinks" ? "drinks" : "food",
+    })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const signature = JSON.stringify({
+        userId: user.uid,
+        items: signatureItems,
+        note: note.trim(),
+    });
+    const attemptStorageKey = `pending-order:${N.ROOT_RESTORAN}:${user.uid}`;
+    let attempt = pendingOrderAttemptRef.current;
+    if (!attempt) {
+        try {
+            attempt = JSON.parse(sessionStorage.getItem(attemptStorageKey) || "null");
+        } catch {
+            attempt = null;
+        }
+    }
+    if (attempt && attempt.signature !== signature) {
+        alert("Prethodna narudžba još nije potvrđena. Ponovite slanje iste korpe da biste izbjegli duplu narudžbu.");
+        return;
+    }
+    if (!attempt) attempt = { id: makeOrderId(), signature };
+    pendingOrderAttemptRef.current = attempt;
+    try {
+        sessionStorage.setItem(attemptStorageKey, JSON.stringify(attempt));
+    } catch { }
+
+    const orderId = attempt.id;
+    const ref = child(ordersRestoran(), orderId);
+    sendingGuardRef.current = true;
     setSending(true);
     setSeconds(20);
 
     let finished = false;
-
-    const ref = push(ordersRestoran());
 
     const timer = setInterval(() => {
 
@@ -848,32 +928,35 @@ const confirmOrder = async () => {
 
     }, 1000);
 
-    const timeout = setTimeout(async () => {
+    const timeout = setTimeout(() => {
 
         if (finished) return;
-
-        finished = true;
-
         clearInterval(timer);
-
-        try {
-
-            await remove(ref);
-
-        } catch (e) {
-
-            console.log(e);
-
-        }
-
-        setSending(false);
         setSeconds(0);
-
-        alert(
-            "Narudžba nije poslana.\nMolimo pokušajte ponovo."
-        );
+        // Firebase may still be committing this same order. Keep the form
+        // locked until its write resolves so a slow acknowledgement cannot
+        // create a duplicate or delete an order that already reached the server.
 
     }, 20000);
+
+    const finishAcceptedOrder = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        clearInterval(timer);
+        sendingGuardRef.current = false;
+        pendingOrderAttemptRef.current = null;
+        try { sessionStorage.removeItem(attemptStorageKey); } catch { }
+        setSending(false);
+        setSeconds(0);
+        setCart({});
+        setSelectedItems([]);
+        setNote("");
+        setShowCart(false);
+        if (cartHistoryOpenRef.current) window.history.back();
+        setOrdered(true);
+        setTimeout(() => setOrdered(false), 2000);
+    };
 
     try {
 
@@ -893,9 +976,8 @@ const confirmOrder = async () => {
             `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} ` +
             `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()}`;
 
-        await set(ref, {
-
-            orderId: ref.key,
+        const orderData = {
+            orderId,
 
             orderById: user.uid,
 
@@ -913,35 +995,52 @@ const confirmOrder = async () => {
 
             description: desc,
 
+            itemTypes: items.map((item) => item.menuType === "drinks" ? "drinks" : "food"),
+
             addittionalInfo: note.trim()
+        };
 
+        console.info("[ORDER_CREATE] start", { orderId, itemCount: items.length });
+        let transaction;
+        let attempt = 0;
+        while (true) {
+            try {
+                if (!navigator.onLine) await waitForBrowserOnline();
+
+                const completedSnapshot = await get(completeOrderRef(user.uid, orderId));
+                if (completedSnapshot.exists()) {
+                    console.info("[ORDER_CREATE] already completed; skipping", { orderId });
+                    finishAcceptedOrder();
+                    return;
+                }
+
+                transaction = await runTransaction(ref, (current) => {
+                    if (current !== null) return undefined;
+                    return orderData;
+                }, { applyLocally: false });
+
+                if (!transaction.committed && !sameOrderPayload(transaction.snapshot.val(), orderData)) {
+                    throw new Error("ID narudžbe već postoji sa drugim podacima.");
+                }
+                break;
+            } catch (networkError) {
+                if (!isTemporaryNetworkError(networkError) || attempt >= 5) throw networkError;
+                const retryDelay = Math.min(1000 * (2 ** attempt), 10000);
+                attempt += 1;
+                console.warn("[ORDER_CREATE] transient network issue; retrying same ID", {
+                    orderId, attempt, retryDelay, online: navigator.onLine,
+                });
+                if (!navigator.onLine) await waitForBrowserOnline();
+                else await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+            }
+        }
+
+        console.info("[ORDER_CREATE] accepted", {
+            orderId,
+            created: transaction.committed,
+            existingSameOrder: !transaction.committed,
         });
-
-        if (finished) return;
-
-        finished = true;
-
-        clearTimeout(timeout);
-        clearInterval(timer);
-
-setSending(false);
-setSeconds(0);
-
-setCart({});
-setSelectedItems([]);
-setNote("");
-setShowCart(false);
-if (cartHistoryOpenRef.current) {
-  window.history.back();
-}
-
-setOrdered(true);
-
-setTimeout(() => {
-
-    setOrdered(false);
-
-}, 2000);
+        finishAcceptedOrder();
 
     } catch (e) {
 
@@ -952,17 +1051,20 @@ setTimeout(() => {
             clearTimeout(timeout);
             clearInterval(timer);
 
-            try {
-
-                await remove(ref);
-
-            } catch { }
-
+            // Zadržavamo ID i ne uklanjamo zapis na grešci: server je možda već
+            // prihvatio upis. Ponovni pokušaj koristi isti ID i transakciju.
+            sendingGuardRef.current = false;
             setSending(false);
             setSeconds(0);
 
+            console.error("[ORDER_CREATE] failed", {
+                orderId,
+                message: e?.message || String(e),
+                code: e?.code || "",
+            }, e);
+
             alert(
-                "Narudžba nije poslana.\nMolimo pokušajte ponovo."
+                "Potvrda narudžbe nije stigla. Pokušajte ponovo sa istom korpom; koristiće se isti ID."
             );
 
         }
@@ -1627,23 +1729,29 @@ animate-textUp
               <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-emerald-700"><Mic size={17} /> Glasovna pretraga</div>
               <h2 id="voice-suggestions-title" className="mt-1 text-xl font-black sm:text-2xl">Izaberi pronađeni artikal</h2>
               <p className="mt-2 rounded-xl bg-emerald-50 px-3 py-2 text-sm leading-relaxed text-neutral-700">
-                Izgovoreno: „{voiceSuggestions.transcript}“ · Dodirni artikal koji želiš dodati.
+                Izgovoreno: „{voiceSuggestions.transcript}“ · Izaberi mogući artikal i potvrdi izbor.
               </p>
+              {!!voiceSuggestions.recognized?.length && <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                <p className="text-xs font-black uppercase tracking-wide text-emerald-800">Sigurno prepoznato i dodato</p>
+                {voiceSuggestions.recognized.map(({ item, quantity }) => <p key={item.id} className="mt-1 flex items-center gap-2 text-sm font-bold text-emerald-900"><Check size={16} /> {item.name} × {quantity}</p>)}
+              </div>}
             </header>
             <div className="min-h-0 space-y-3 overflow-y-auto overscroll-contain px-4 py-4 sm:px-6">
+              <p className="px-1 text-xs font-black uppercase tracking-wide text-neutral-500">Mogući artikli</p>
               {voiceSuggestions.items.map(({ item }) => {
                 const quantity = voiceCandidateQuantities[item.id] || 1;
+                const isSelected = voiceSelectedCandidateId === item.id;
                 const price = Number(String(item.price ?? "0").replace(",", ".")) || 0;
                 return (
                   <article
                     key={item.id}
                     role="button"
                     tabIndex={0}
-                    onClick={() => addVoiceMatches([{ item, quantity }])}
-                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); addVoiceMatches([{ item, quantity }]); } }}
-                    className="cursor-pointer rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:border-emerald-300 hover:shadow-md"
+                    onClick={() => setVoiceSelectedCandidateId(item.id)}
+                    onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setVoiceSelectedCandidateId(item.id); } }}
+                    className={`cursor-pointer rounded-2xl border p-4 shadow-sm transition hover:border-emerald-300 hover:shadow-md ${isSelected ? "border-emerald-600 bg-emerald-50 ring-2 ring-emerald-200" : "border-neutral-200 bg-white"}` }
                   >
-                    <h3 className="text-lg font-black leading-tight">{item.name}</h3>
+                    <div className="flex items-start justify-between gap-3"><h3 className="text-lg font-black leading-tight">{item.name}</h3>{isSelected && <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-emerald-600 text-white"><Check size={17} strokeWidth={3} /></span>}</div>
                     {item.description && <p className="mt-1 text-sm leading-relaxed text-neutral-500">{item.description}</p>}
                     <div className="mt-4 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2" onClick={(event) => event.stopPropagation()}>
@@ -1658,7 +1766,10 @@ animate-textUp
               })}
             </div>
             <footer className="shrink-0 border-t border-neutral-200 bg-white px-4 py-3 sm:px-6">
-              <button type="button" onClick={() => setVoiceSuggestions(null)} className="w-full rounded-2xl border border-neutral-300 bg-neutral-100 px-4 py-3 font-bold text-neutral-700 hover:bg-neutral-200">Otkaži</button>
+              <div className="space-y-2">
+                <button type="button" disabled={!voiceSelectedCandidateId} onClick={() => { const selected = voiceSuggestions.items.find(({ item }) => item.id === voiceSelectedCandidateId); if (selected) addVoiceMatches([{ item: selected.item, quantity: voiceCandidateQuantities[selected.item.id] || 1 }]); }} className="w-full rounded-2xl bg-emerald-700 px-4 py-3 font-black text-white shadow-sm transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-neutral-300 disabled:text-neutral-500">Potvrdi</button>
+                <button type="button" onClick={() => { setVoiceSuggestions(null); setVoiceSelectedCandidateId(null); }} className="w-full rounded-2xl border border-neutral-300 bg-neutral-100 px-4 py-3 font-bold text-neutral-700 hover:bg-neutral-200">Otkaži</button>
+              </div>
             </footer>
           </section>
         </div>
