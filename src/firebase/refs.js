@@ -22,6 +22,18 @@ export const menuDataByDate = (date) =>
 export const menuData = () =>
   child(menuRestoran(), N.MENU_PODACI);
 
+export const menuDrinkItems = () =>
+  child(menuRestoran(), N.MENU_PODACI_PICE);
+
+export const menuDrinkItem = (menuItemId) =>
+  child(menuDrinkItems(), String(menuItemId));
+
+export const menuDrinkStock = (menuItemId) =>
+  child(menuDrinkItem(menuItemId), N.MENU_STANJE);
+
+export const menuDrinkStockPath = (menuItemId) =>
+  `${N.MENU_RESTORAN}/${N.MENU_PODACI_PICE}/${menuItemId}/${N.MENU_STANJE}`;
+
 export const menuCreateAt = () =>
   child(menuRestoran(), N.MENU_CREATE_AT);
 
@@ -130,4 +142,10 @@ export const mjeseciRestoran = () =>
 // APP UPDATE
 export const appUpdateRestoran = () =>
   child(rootRestoran(), N.APP_UPDATE_RESTORAN);
+
+// SMJENA
+export const smjenaRef = () =>
+  child(rootRestoran(), N.SMJENA);
+export const smjenaPath = () =>
+  `${N.ROOT_RESTORAN}/${N.SMJENA}`;
   

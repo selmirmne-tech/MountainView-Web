@@ -96,8 +96,11 @@ useEffect(() => {
           ...order
         });
 
-        const price = parseFloat(order.totalPrice || 0);
-        sum += isNaN(price) ? 0 : price;
+        // Exclude stornated orders from total pazar
+        if (!order.obrisano) {
+          const price = parseFloat(order.totalPrice || 0);
+          sum += isNaN(price) ? 0 : price;
+        }
       });
 
       list.sort((a, b) =>
@@ -295,6 +298,11 @@ if (loading) {
               transition: "transform .16s ease, box-shadow .16s ease"
             }}
           >
+            {order.obrisano && (
+              <div style={{ color: "#C62828", fontWeight: 800, fontSize: 12, marginBottom: 4, letterSpacing: ".05em" }}>
+                STORNIRAN
+              </div>
+            )}
             <div style={{ fontWeight: "bold" }}>
               {order.orderPersonName}
             </div>
@@ -327,6 +335,13 @@ if (loading) {
             <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>
               {order.name}
             </div>
+            {order.obrisano && (order.stornirao || order.razlogStorniranja || order.vrijemeStorniranja) && (
+              <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 10, background: "#fff1f1", color: "#9F2D2D", fontSize: 12, lineHeight: 1.5 }}>
+                {order.stornirao && <div>Stornirao: {order.stornirao}</div>}
+                {order.razlogStorniranja && <div>Razlog: {order.razlogStorniranja}</div>}
+                {order.vrijemeStorniranja && <div>Vrijeme: {order.vrijemeStorniranja}</div>}
+              </div>
+            )}
 
             <div style={{
               display: "flex",
@@ -337,7 +352,7 @@ if (loading) {
                 {order.status}
               </div>
 
-              <div style={{ fontWeight: "bold" }}>
+              <div style={{ fontWeight: "bold", color: order.obrisano ? "#C62828" : "inherit" }}>
                 {order.totalPrice} €
               </div>
             </div>
@@ -375,7 +390,21 @@ if (loading) {
               boxShadow: "0 -16px 45px rgba(15, 45, 35, .18)"
             }}
           >
-            <h3>{selectedOrder.orderPersonName}</h3>
+            <h3 style={{ color: selectedOrder.obrisano ? "#C62828" : "#173C32" }}>{selectedOrder.orderPersonName}</h3>
+{selectedOrder.obrisano && (
+  <div style={{ background: "#FFF5F5", border: "1px solid #FFCDD2", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+    <div style={{ color: "#C62828", fontWeight: 800, fontSize: 13, marginBottom: 4 }}>STORNIRAN</div>
+    {selectedOrder.razlogStorniranja && (
+      <div style={{ fontSize: 13, color: "#C62828" }}>Razlog: {selectedOrder.razlogStorniranja}</div>
+    )}
+    {selectedOrder.stornirao && (
+      <div style={{ fontSize: 12, color: "#9F2D2D", marginTop: 3 }}>Stornirao: {selectedOrder.stornirao}</div>
+    )}
+    {selectedOrder.vrijemeStorniranja && (
+      <div style={{ fontSize: 11, color: "#C62828", opacity: 0.7, marginTop: 2 }}>Stornirano: {selectedOrder.vrijemeStorniranja}</div>
+    )}
+  </div>
+)}
 
 {selectedOrder.addittionalInfo && (
   <div style={{

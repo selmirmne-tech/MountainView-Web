@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { child, get, onValue, update } from "firebase/database";
-import { rootRestoran, usersRestoran } from "../firebase/refs";
+import { rootRestoran, smjenaRef, usersRestoran } from "../firebase/refs";
 import { auth, getMessagingSafe } from "../firebase/config";
 import { getToken } from "firebase/messaging";
-import { Bell, Info, LogOut, Menu, QrCode, X } from "lucide-react";
+import { Bell, Clock, Info, LogOut, Menu, QrCode, X } from "lucide-react";
+import {
+  getSmjenaConfig,
+  syncSmjenaFromSnapshot,
+  saveSmjenaToFirebase,
+  getActiveShiftName,
+  formatLastChanged,
+  NACIN_AUTOMATSKI,
+  NACIN_PRVA,
+  NACIN_DRUGA,
+} from "../utils/smjenaManager";
 
 const readLocalUser = () => {
   try {
@@ -21,6 +31,12 @@ export default function Dashboard() {
   const [toast, setToast] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [notificationBusy, setNotificationBusy] = useState(false);
+  const [smjenaConfig, setSmjenaConfig] = useState(getSmjenaConfig());
+  const [smjenaModalOpen, setSmjenaModalOpen] = useState(false);
+  const [smjenaFormNacin, setSmjenaFormNacin] = useState(smjenaConfig.nacin);
+  const [smjenaFormOd, setSmjenaFormOd] = useState(smjenaConfig.prvaOd);
+  const [smjenaFormDo, setSmjenaFormDo] = useState(smjenaConfig.prvaDo);
+  const [smjenaSaving, setSmjenaSaving] = useState(false);
   const accountMenuRef = useRef(null);
   const navigate = useNavigate();
   const showToast = (message) => {
@@ -99,6 +115,44 @@ export default function Dashboard() {
   const openStats = () => user?.titula === "Administrator" ? navigate("/stats") : showToast("Nemate pravo pristupa!");
   const openAdmin = () => user?.titula === "Administrator" ? navigate("/admin") : showToast("Nemate pravo pristupa!");
   const openAccounting = () => ["Administrator", "Konobar"].includes(user?.titula) ? navigate("/obracun") : showToast("Nemate pravo pristupa!");
+
+  useEffect(() => {
+    return onValue(smjenaRef(), (snapshot) => {
+      syncSmjenaFromSnapshot(snapshot);
+      setSmjenaConfig(getSmjenaConfig());
+    });
+  }, []);
+
+  const handleOpenSmjenaModal = () => {
+    const cfg = getSmjenaConfig();
+    setSmjenaConfig(cfg);
+    setSmjenaFormNacin(cfg.nacin);
+    setSmjenaFormOd(cfg.prvaOd);
+    setSmjenaFormDo(cfg.prvaDo);
+    setAccountMenuOpen(false);
+    setSmjenaModalOpen(true);
+  };
+
+  const handleSaveSmjena = async () => {
+    setSmjenaSaving(true);
+    try {
+      const updatedBy = user?.ime || user?.email || "Web";
+      const res = await saveSmjenaToFirebase(
+        smjenaFormNacin,
+        smjenaFormOd,
+        smjenaFormDo,
+        updatedBy
+      );
+      setSmjenaConfig(res);
+      showToast("Smjena uspješno sačuvana!");
+      setSmjenaModalOpen(false);
+    } catch (err) {
+      console.error("Greška pri čuvanju smjene:", err);
+      showToast("Greška pri čuvanju smjene!");
+    } finally {
+      setSmjenaSaving(false);
+    }
+  };
 const [licenseExpired, setLicenseExpired] = useState(false);
 
 // LOAD USER ON START
@@ -343,6 +397,10 @@ Kontaktirajte administratora
             {accountMenuOpen ? <X size={22} /> : <Menu size={23} />}
           </button>
           {accountMenuOpen && <div role="menu" style={{ position: "absolute", top: "calc(100% + 10px)", right: 0, zIndex: 20, width: 220, padding: 7, border: "1px solid #e2eae6", borderRadius: 15, background: "white", boxShadow: "0 16px 40px rgba(18,38,31,.18)" }}>
+            <button type="button" role="menuitem" onClick={handleOpenSmjenaModal} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: "pointer" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 11 }}><Clock size={18} /> Smjena</div>
+              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: "#e8f5e9", color: "#2e7d32", fontWeight: 800 }}>{getActiveShiftName(new Date(), smjenaConfig)}</span>
+            </button>
             <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); navigate("/about"); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: "pointer" }}><Info size={18} /> Informacije</button>
             <button type="button" role="menuitem" onClick={() => { setAccountMenuOpen(false); navigate("/qr-menu"); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: "pointer" }}><QrCode size={18} /> QR meni</button>
             <button type="button" role="menuitem" onClick={() => void enableNotifications()} disabled={notificationBusy} style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, border: 0, borderRadius: 10, padding: "11px 12px", background: "white", color: "#233b33", textAlign: "left", font: "inherit", cursor: notificationBusy ? "wait" : "pointer", opacity: notificationBusy ? 0.65 : 1 }}><Bell size={18} /> {notificationBusy ? "Uključujem obavještenja…" : user?.fcmToken ? "Osvježi obavještenja" : "Uključi obavještenja"}</button>
@@ -376,6 +434,83 @@ Kontaktirajte administratora
         <Card icon="🧾" title="Obračun artikala" onClick={openAccounting} />
       </div>
     </div>
+    {smjenaModalOpen && (
+        <div role="dialog" aria-modal="true" aria-labelledby="smjena-modal-title" style={{ position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(3px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div style={{ background: "white", borderRadius: 20, width: "100%", maxWidth: 420, padding: 22, boxShadow: "0 20px 45px rgba(0,0,0,0.25)", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <h2 id="smjena-modal-title" style={{ margin: 0, fontSize: 18, fontWeight: 800, color: "#173d31", display: "flex", alignItems: "center", gap: 8 }}>
+                <Clock size={20} color="#008577" /> Upravljanje smjenom
+              </h2>
+              <button type="button" aria-label="Zatvori" onClick={() => setSmjenaModalOpen(false)} style={{ background: "transparent", border: 0, padding: 4, cursor: "pointer", color: "#666", borderRadius: 8, display: "grid", placeItems: "center" }}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{ background: "#e8f5e9", border: "1px solid #c8e6c9", borderRadius: 12, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, color: "#2e7d32", fontWeight: 600 }}>Trenutno aktivna:</span>
+              <span style={{ fontSize: 13, fontWeight: 800, background: "#2e7d32", color: "white", padding: "3px 10px", borderRadius: 999 }}>
+                {getActiveShiftName(new Date(), { nacin: smjenaFormNacin, prvaOd: smjenaFormOd, prvaDo: smjenaFormDo })}
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 10, borderRadius: 10, border: "1.5px solid " + (smjenaFormNacin === NACIN_AUTOMATSKI ? "#008577" : "#e2eae6"), background: smjenaFormNacin === NACIN_AUTOMATSKI ? "#f0fdf4" : "white", cursor: "pointer" }}>
+                <input type="radio" name="smjena_nacin" checked={smjenaFormNacin === NACIN_AUTOMATSKI} onChange={() => setSmjenaFormNacin(NACIN_AUTOMATSKI)} style={{ marginTop: 3, accentColor: "#008577" }} />
+                <div>
+                  <strong style={{ fontSize: 14, color: "#173d31", display: "block" }}>Automatski (po vremenu)</strong>
+                  <span style={{ fontSize: 12, color: "#555" }}>Prva smjena od {smjenaFormOd} do {smjenaFormDo}, druga smjena preostalo vrijeme.</span>
+                </div>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 10, borderRadius: 10, border: "1.5px solid " + (smjenaFormNacin === NACIN_PRVA ? "#008577" : "#e2eae6"), background: smjenaFormNacin === NACIN_PRVA ? "#f0fdf4" : "white", cursor: "pointer" }}>
+                <input type="radio" name="smjena_nacin" checked={smjenaFormNacin === NACIN_PRVA} onChange={() => setSmjenaFormNacin(NACIN_PRVA)} style={{ marginTop: 3, accentColor: "#008577" }} />
+                <div>
+                  <strong style={{ fontSize: 14, color: "#173d31", display: "block" }}>Prva smjena (ručno)</strong>
+                  <span style={{ fontSize: 12, color: "#555" }}>Uvijek računa kao I smjenu bez obzira na trenutno vrijeme.</span>
+                </div>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: 10, borderRadius: 10, border: "1.5px solid " + (smjenaFormNacin === NACIN_DRUGA ? "#008577" : "#e2eae6"), background: smjenaFormNacin === NACIN_DRUGA ? "#f0fdf4" : "white", cursor: "pointer" }}>
+                <input type="radio" name="smjena_nacin" checked={smjenaFormNacin === NACIN_DRUGA} onChange={() => setSmjenaFormNacin(NACIN_DRUGA)} style={{ marginTop: 3, accentColor: "#008577" }} />
+                <div>
+                  <strong style={{ fontSize: 14, color: "#173d31", display: "block" }}>Druga smjena (ručno)</strong>
+                  <span style={{ fontSize: 12, color: "#555" }}>Uvijek računa kao II smjenu bez obzira na trenutno vrijeme.</span>
+                </div>
+              </label>
+            </div>
+
+            <div style={{ background: "#f8faf9", border: "1px solid #e2eae6", borderRadius: 12, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#233b33" }}>Podešavanje radnog vremena I smjene</div>
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <label htmlFor="smjena-od" style={{ fontSize: 11, color: "#666", fontWeight: 600 }}>Od (početak):</label>
+                  <input id="smjena-od" type="time" value={smjenaFormOd} onChange={(e) => setSmjenaFormOd(e.target.value || "05:00")} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", font: "inherit", fontSize: 14, outline: "none" }} />
+                </div>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+                  <label htmlFor="smjena-do" style={{ fontSize: 11, color: "#666", fontWeight: 600 }}>Do (kraj):</label>
+                  <input id="smjena-do" type="time" value={smjenaFormDo} onChange={(e) => setSmjenaFormDo(e.target.value || "15:00")} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", font: "inherit", fontSize: 14, outline: "none" }} />
+                </div>
+              </div>
+              <span style={{ fontSize: 11, color: "#777", lineHeight: 1.3 }}>* II smjena obuhvata preostali dio dana ({smjenaFormDo} - {smjenaFormOd}).</span>
+            </div>
+
+            {smjenaConfig.updatedAt ? (
+              <div style={{ fontSize: 11, color: "#777", textAlign: "center" }}>
+                Poslednja izmjena: {formatLastChanged(smjenaConfig.updatedAt)}{smjenaConfig.updatedBy ? ` (${smjenaConfig.updatedBy})` : ""}
+              </div>
+            ) : null}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <button type="button" onClick={() => setSmjenaModalOpen(false)} disabled={smjenaSaving} style={{ padding: "9px 16px", borderRadius: 10, border: "1px solid #cbd5e1", background: "white", color: "#475569", font: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                Otkaži
+              </button>
+              <button type="button" onClick={handleSaveSmjena} disabled={smjenaSaving} style={{ padding: "9px 20px", borderRadius: 10, border: 0, background: "linear-gradient(115deg, #0b6b5b, #008577)", color: "white", font: "inherit", fontSize: 13, fontWeight: 700, cursor: smjenaSaving ? "wait" : "pointer", opacity: smjenaSaving ? 0.7 : 1, boxShadow: "0 4px 12px rgba(0,91,77,0.25)" }}>
+                {smjenaSaving ? "Čuvanje…" : "Sačuvaj"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     {toast && <div role="status" style={{ position: "fixed", zIndex: 100, left: "50%", bottom: 28, transform: "translateX(-50%)", background: "#222", color: "#fff", padding: "12px 18px", borderRadius: 24, boxShadow: "0 6px 22px #0004", whiteSpace: "nowrap" }}>{toast}</div>}
 	</>
   );

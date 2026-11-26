@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { isFirstShift } from "../utils/smjenaManager";
 import {
   onValue,
   get,
@@ -22,6 +23,7 @@ import {
   rootRestoran,
   mjeseciRestoran,
   waiterMonthStatistics,
+  menuRestoran,
 } from "../firebase/refs";
 import { sentenceCase } from "./animationText";
 
@@ -319,6 +321,14 @@ const vibrate = () => {
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (deletedOrders.length > 0 || !showDeletedOrders) return;
+    setShowDeletedOrders(false);
+    setSelectedDepartment(userRole === "Sank" ? "drinks" : "food");
+    setSelectedOrder(null);
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [deletedOrders.length, showDeletedOrders, userRole]);
 
   const parseCustomTime = (str) => {
     if (!str) return null;
@@ -847,16 +857,34 @@ const getWaitMinutes = (order, nowTs) => {
       const dateKey = `${yearKey}/${monthKey}/${dayKey}`;
       const waiterDayRef = child(waiterMonthStatistics(userId, yearKey, monthKey), dayKey);
       const monthStatsRef = child(mjeseciRestoran(), monthSummaryKey);
-      const [totalRestSnap, firstSnap, secondSnap, waiterSnap, monthSnap] = await Promise.all([
+      const stockDeductions = new Map();
+      (Array.isArray(finalOrder.stockItems) ? finalOrder.stockItems : []).forEach((item) => {
+        const itemId = String(item?.menuItemId ?? "");
+        const quantity = Number(item?.quantity);
+        if (/^[A-Za-z0-9_-]+$/.test(itemId) && Number.isInteger(quantity) && quantity > 0) {
+          stockDeductions.set(itemId, (stockDeductions.get(itemId) || 0) + quantity);
+        }
+      });
+      const drinksMenuRef = child(menuRestoran(), "Podaci1");
+      const stockReadsPromise = Promise.all([...stockDeductions.keys()].map(async (itemId) => {
+        const itemSnapshot = await get(child(drinksMenuRef, itemId));
+        if (!itemSnapshot.exists()) return null;
+        const currentStock = Number(String(itemSnapshot.child("stanje").val() ?? "0").replace(",", "."));
+        const safeStock = Number.isFinite(currentStock) ? currentStock : 0;
+        return [itemId, safeStock - stockDeductions.get(itemId)];
+      }));
+      const [totalRestSnap, firstSnap, secondSnap, waiterSnap, monthSnap, stockReads] = await Promise.all([
         get(totalRestoranRef()), get(totalPrvaRef()), get(totalDrugaRef()),
         get(waiterDayRef),
         get(monthStatsRef),
+        stockReadsPromise,
       ]);
 
       const number = (value) => Number(String(value ?? "0").replace(",", ".")) || 0;
+      const firstShift = isFirstShift(now);
+      const first = number(firstSnap.val()) + (firstShift ? orderPrice : 0);
+      const second = number(secondSnap.val()) + (firstShift ? 0 : orderPrice);
       const hour = now.getHours();
-      const first = number(firstSnap.val()) + (hour >= 5 && hour < 15 ? orderPrice : 0);
-      const second = number(secondSnap.val()) + (hour >= 5 && hour < 15 ? 0 : orderPrice);
       const pad = (n) => String(n).padStart(2, "0");
       const timestamp = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()} ${pad(hour)}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
       const orderDetails = {
@@ -867,6 +895,7 @@ const getWaitMinutes = (order, nowTs) => {
         status: `Complete ${timestamp}`, notificationSatus: "true",
         VrijemeNarucivanja: finalOrder.time || "",
         itemTypes: Array.isArray(finalOrder.itemTypes) ? finalOrder.itemTypes : [],
+        stockItems: Array.isArray(finalOrder.stockItems) ? finalOrder.stockItems : [],
         foodCompleted: true, drinkCompleted: true,
       };
 
@@ -883,6 +912,9 @@ const getWaitMinutes = (order, nowTs) => {
         [`${N.TOTAL_PRICE_RESTORAN}/${N.GLOBAL_LOCK}`]: "False",
         [`${N.TOTAL_PRICE_RESTORAN}/GlobalLockUpdatedAt`]: null,
       };
+      stockReads.filter(Boolean).forEach(([itemId, quantity]) => {
+        updates[`${N.MENU_RESTORAN}/Podaci1/${itemId}/stanje`] = quantity;
+      });
       await update(rootRestoran(), updates);
       locksReleasedByCommit = true;
       sendPushNotification(
@@ -1241,6 +1273,7 @@ boxShadow:"0 8px 20px rgba(255,153,0,.35)"
             </button>
 
             {/* TAB 3: OTKAZANE */}
+            {deletedCount > 0 && (
             <button
               type="button"
               onClick={selectDeletedTab}
@@ -1292,6 +1325,7 @@ boxShadow:"0 8px 20px rgba(255,153,0,.35)"
                 {deletedCount}
               </span>
             </button>
+            )}
           </div>
         );
       })()}

@@ -48,41 +48,44 @@ const ProtectedRoute = ({ user, children, allowedRoles }) => {
   return children;
 };
 
-const isDashboardPath = (pathname) => pathname.replace(/\/+$/, "").toLowerCase().endsWith("/dashboard");
+const isDashboardPath = (pathname) => {
+  if (!pathname) return false;
+  const clean = pathname.replace(/\/+$/, "").toLowerCase();
+  return clean === "/dashboard" || clean.endsWith("/dashboard");
+};
 
 function DashboardBackGuard() {
   const location = useLocation();
   const navigate = useNavigate();
+  const isDashboardRef = useRef(false);
   const navigateRef = useRef(navigate);
-  const dashboardActiveRef = useRef(false);
-  const dashboardGuardAddedRef = useRef(false);
   navigateRef.current = navigate;
 
-  useLayoutEffect(() => {
-    const isDashboard = isDashboardPath(location.pathname);
-    dashboardActiveRef.current = isDashboard;
-    if (!isDashboard) {
-      dashboardGuardAddedRef.current = false;
-      return;
-    }
-    if (!dashboardGuardAddedRef.current) {
-      dashboardGuardAddedRef.current = true;
-      navigate(`${location.pathname}${location.search}${location.hash}`, {
-        state: { dashboardHistoryGuard: true },
-      });
-    }
-  }, [location.hash, location.pathname, location.search, navigate]);
+  // Keep ref updated with whether current page is dashboard
+  isDashboardRef.current = isDashboardPath(location.pathname);
 
   useEffect(() => {
-    const keepDashboardOpen = () => {
-      if (!dashboardActiveRef.current) return;
-      const currentPath = isDashboardPath(window.location.pathname)
-        ? `${window.location.pathname}${window.location.search}${window.location.hash}`
-        : "/dashboard";
-      navigateRef.current(currentPath, { state: { dashboardHistoryGuard: true } });
+    // Whenever we arrive on dashboard, push state to trap browser back button
+    if (isDashboardPath(location.pathname)) {
+      window.history.pushState({ dashboardTrap: true }, "", window.location.href);
+    }
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      // If user was on dashboard when they clicked Back:
+      if (isDashboardRef.current) {
+        // Trap user on dashboard - do not allow leaving dashboard via Back button:
+        window.history.pushState({ dashboardTrap: true }, "", window.location.href);
+        navigateRef.current("/dashboard", { replace: true });
+      }
     };
-    window.addEventListener("popstate", keepDashboardOpen);
-    return () => window.removeEventListener("popstate", keepDashboardOpen);
+
+    // Attach once at window level so it is NEVER unmounted while navigating back
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
   }, []);
 
   return null;

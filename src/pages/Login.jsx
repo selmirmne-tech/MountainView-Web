@@ -126,7 +126,7 @@ export default function Login() {
         const fullUser = { ...snapshot.val(), uid };
         localStorage.setItem("user", JSON.stringify(fullUser));
         window.dispatchEvent(new Event("user-login"));
-        navigate("/dashboard");
+        navigate("/dashboard", { replace: true });
 
         // Token se čuva naknadno i nikada ne blokira prijavu.
         void notificationPermission.then((permission) => {
@@ -180,7 +180,7 @@ export default function Login() {
       await set(child(usersRestoran(), uid), newUser);
       localStorage.setItem("user", JSON.stringify(newUser));
       window.dispatchEvent(new Event("user-login"));
-      navigate("/dashboard");
+      navigate("/dashboard", { replace: true });
     } catch (error) {
       console.error("REGISTER ERROR:", error);
       alert("Registracija nije uspjela: " + error.message);

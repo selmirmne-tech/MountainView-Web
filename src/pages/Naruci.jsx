@@ -997,6 +997,10 @@ const confirmOrder = async () => {
 
             itemTypes: items.map((item) => item.menuType === "drinks" ? "drinks" : "food"),
 
+            stockItems: items
+                .filter((item) => item.menuType === "drinks" && item.sourceId != null)
+                .map((item) => ({ menuItemId: String(item.sourceId), quantity: Number(item.qty) })),
+
             addittionalInfo: note.trim()
         };
 

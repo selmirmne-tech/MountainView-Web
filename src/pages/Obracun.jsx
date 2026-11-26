@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { get, onValue, update } from "firebase/database";
-import { artikliRestoran, formaRestoran, rootRestoran, usersRestoran } from "../firebase/refs";
+import { child, get, onValue, runTransaction, update } from "firebase/database";
+import { artikliRestoran, formaRestoran, globalLockPath, globalLockRef, menuDrinkItem, menuDrinkItems, menuDrinkStockPath, rootRestoran, usersRestoran } from "../firebase/refs";
 import { sentenceCase } from "./animationText";
+import * as N from "../firebase/nodes";
 
 const pageStyle = {
   width: "100%", minHeight: "100vh", boxSizing: "border-box", padding: "18px clamp(8px, 1.2vw, 18px) 40px",
@@ -26,6 +27,15 @@ const entryCell = { ...cell, padding: "7px 5px", fontSize: 12, overflowWrap: "an
 const objectValue = (value) => {
   if (Array.isArray(value)) return Object.fromEntries(value.map((item, index) => [String(index), item]).filter(([, item]) => item != null));
   return value && typeof value === "object" ? value : {};
+};
+const withTimeout = (promise, ms, label = "Operacija") => {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = window.setTimeout(() => {
+      reject(new Error(`${label} je prekinuta zbog prekoračenja vremena (${ms / 1000}s). Provjerite internet konekciju.`));
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer));
 };
 const number = (value) => {
   if (value === null || value === undefined || value === "") return 0;
@@ -188,12 +198,40 @@ export default function Obracun() {
   const [form, setForm] = useState({ naziv: "", jedinica_mjere: "", stanje_prethodno: "", ubaceno: "", kolicina: "", cijena: "" });
   const [showSuccess, setShowSuccess] = useState(false);
   const [successText, setSuccessText] = useState("");
+  const [menuStockItems, setMenuStockItems] = useState([]);
+  const [menuStockInputs, setMenuStockInputs] = useState({});
+  const [stockBusyId, setStockBusyId] = useState("");
+  const [stockDialogOpen, setStockDialogOpen] = useState(false);
+  const [stockDialogConfirm, setStockDialogConfirm] = useState(false);
+  const [stockDialogError, setStockDialogError] = useState("");
+  const [stockWorking, setStockWorking] = useState(false);
+  const [stockStage, setStockStage] = useState("");
+  const firstStockInputRef = useRef(null);
 
   const showSuccessAnimation = (text) => {
     setSuccessText(text);
     setShowSuccess(true);
     window.setTimeout(() => setShowSuccess(false), 2000);
   };
+
+  useEffect(() => {
+    if (stockDialogOpen && !stockDialogConfirm) {
+      const timer = window.setTimeout(() => {
+        if (firstStockInputRef.current) {
+          firstStockInputRef.current.focus();
+          if (firstStockInputRef.current.value === "0") {
+            setMenuStockInputs((current) => {
+              const firstId = menuStockItems[0]?.id;
+              return firstId ? { ...current, [firstId]: "" } : current;
+            });
+          } else {
+            firstStockInputRef.current.select?.();
+          }
+        }
+      }, 60);
+      return () => window.clearTimeout(timer);
+    }
+  }, [stockDialogOpen, stockDialogConfirm, menuStockItems]);
 
   useEffect(() => {
     const offItems = onValue(artikliRestoran(), (snapshot) => {
@@ -216,8 +254,194 @@ export default function Obracun() {
           setUsersById(users);
         }, (firebaseError) => setError(`Ne mogu učitati imena korisnika: ${firebaseError.message}`))
       : () => {};
-    return () => { offItems(); offHistory(); offUsers(); };
+    const offMenuStock = isAdmin
+      ? onValue(menuDrinkItems(), (snapshot) => {
+          const rows = [];
+          snapshot.forEach((itemSnapshot) => {
+            const item = objectValue(itemSnapshot.val());
+            rows.push({ id: itemSnapshot.key, name: String(item.name || itemSnapshot.key), stock: number(item[N.MENU_STANJE]) });
+          });
+          rows.sort((a, b) => /^\d+$/.test(a.id) && /^\d+$/.test(b.id)
+            ? Number(a.id) - Number(b.id) : a.id.localeCompare(b.id));
+          setMenuStockItems(rows);
+          setMenuStockInputs((current) => Object.fromEntries(rows.map((item) => [item.id, current[item.id] ?? "0"])));
+        }, (firebaseError) => setError(`Ne mogu učitati stanje menija pića: ${firebaseError.message}`))
+      : () => {};
+    return () => { offItems(); offHistory(); offUsers(); offMenuStock(); };
   }, [isAdmin]);
+
+  const requestMenuStockAdd = () => {
+    const quantities = Object.entries(menuStockInputs)
+      .map(([itemId, raw]) => ({ itemId, raw: String(raw ?? "").trim(), amount: Number(String(raw ?? "").trim().replace(",", ".")) }))
+      .filter((item) => item.raw !== "" && item.amount !== 0);
+    if (quantities.some((item) => !Number.isFinite(item.amount) || item.amount < 0)) {
+      setStockDialogError("Unesite ispravne količine. Vrijednosti ne mogu biti negativne.");
+      return;
+    }
+    if (!quantities.length) {
+      setStockDialogError("Unesite količinu za najmanje jedan artikal.");
+      return;
+    }
+    setStockDialogError("");
+    setStockDialogConfirm(true);
+  };
+
+  const executeStockUpdate = async (quantities) => {
+    if (!quantities || !quantities.length) return;
+    setStockWorking(true);
+    setStockStage("Preuzimanje locka kase…");
+    const lockRef = globalLockRef();
+    const lockLeaseMs = 15 * 1000;
+    const lockToken = `LOCK:STOCK:WEB:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
+    let lockAttempted = false;
+    let lockReleasedByCommit = false;
+
+    try {
+      lockAttempted = true;
+      let acquired = false;
+
+      for (let attempt = 1; attempt <= 20; attempt++) {
+        setStockStage(attempt === 1 ? "Preuzimanje locka kase…" : `Čeka se oslobađanje kase (${attempt}/20)…`);
+
+        const lockTx = await withTimeout(
+          runTransaction(lockRef, (currentValue) => {
+            const owner = currentValue == null ? null : String(currentValue);
+            const isFree = owner == null || owner.toLowerCase() === "false";
+            if (isFree) return lockToken;
+            return;
+          }, { applyLocally: false }),
+          8000, "Preuzimanje locka"
+        );
+
+        if (lockTx.committed && lockTx.snapshot.val() === lockToken) {
+          try { await update(lockRef.parent, { GlobalLockUpdatedAt: Date.now() }); } catch (_) { }
+          acquired = true;
+          break;
+        }
+
+        // Force-acquire if lease is expired (>15s)
+        try {
+          const leaseSnap = await withTimeout(get(child(lockRef.parent, "GlobalLockUpdatedAt")), 5000, "Provjera lease");
+          const leaseAt = Number(leaseSnap.val()) || 0;
+          if (leaseAt > 0 && Date.now() - leaseAt > lockLeaseMs) {
+            console.warn("WEB_STOCK_LOCK_EXPIRED forcing acquire", { attempt, leaseAgeMs: Date.now() - leaseAt });
+            await update(lockRef.parent, { [N.GLOBAL_LOCK]: lockToken, GlobalLockUpdatedAt: Date.now() });
+            acquired = true;
+            break;
+          }
+        } catch (_) { }
+
+        if (attempt < 20) await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      }
+
+      if (!acquired) throw new Error("Kasa je zauzeta. Pokušajte ponovo za trenutak.");
+
+      setStockStage("Čitanje stanja artikala…");
+      const stockSnapshots = await Promise.all(quantities.map(async ({ itemId }) => [
+        itemId,
+        await withTimeout(get(menuDrinkItem(itemId)), 10000, `Čitanje artikla ${itemId}`),
+      ]));
+
+      const updates = {};
+      stockSnapshots.forEach(([itemId, snapshot]) => {
+        if (!snapshot.exists()) throw new Error(`Artikal više nije u meniju: ${itemId}`);
+        const currentStock = number(snapshot.child(N.MENU_STANJE).val());
+        const amount = quantities.find((item) => item.itemId === itemId)?.amount || 0;
+        const newStock = Math.round((currentStock + amount) * 100) / 100;
+        updates[menuDrinkStockPath(itemId)] = newStock;
+      });
+
+      // Atomic release of GlobalLock and clearing lease inside the same update
+      updates[globalLockPath()] = "False";
+      updates[`${N.ROOT_RESTORAN}/${N.TOTAL_PRICE_RESTORAN}/GlobalLockUpdatedAt`] = null;
+
+      setStockStage("Upisivanje novog stanja…");
+      await withTimeout(update(rootRestoran(), updates), 20000, "Upis stanja");
+      lockReleasedByCommit = true;
+
+      localStorage.removeItem("pending_stock_update_web");
+      setMenuStockInputs((current) => ({
+        ...current,
+        ...Object.fromEntries(quantities.map(({ itemId }) => [itemId, "0"])),
+      }));
+      setStockWorking(false);
+      setStockStage("");
+      showSuccessAnimation("Stanje pića je uspješno ažurirano!");
+    } catch (err) {
+      console.error("WEB_STOCK_UPDATE_FAILED", err);
+      localStorage.removeItem("pending_stock_update_web");
+      if (lockAttempted && !lockReleasedByCommit) {
+        try {
+          await runTransaction(lockRef, (current) => {
+            if (String(current) === lockToken) return "False";
+            return;
+          }, { applyLocally: false });
+          await update(lockRef.parent, { GlobalLockUpdatedAt: null });
+        } catch (releaseErr) {
+          console.error("WEB_STOCK_LOCK_RELEASE_FAILED", releaseErr);
+        }
+      }
+      setStockWorking(false);
+      setStockStage("");
+      setError(`Stanje nije izmijenjeno: ${err.message}`);
+    }
+  };
+
+  const applyMenuStockAdd = () => {
+    const quantities = Object.entries(menuStockInputs)
+      .map(([itemId, raw]) => ({ itemId, raw: String(raw ?? "").trim(), amount: Number(String(raw ?? "").trim().replace(",", ".")) }))
+      .filter((item) => item.raw !== "" && item.amount !== 0);
+    if (!quantities.length || quantities.some((item) => !Number.isFinite(item.amount) || item.amount <= 0)) {
+      setStockDialogConfirm(false);
+      setStockDialogError("Unesite ispravne pozitivne količine.");
+      return;
+    }
+    setStockDialogOpen(false);
+    setStockDialogConfirm(false);
+    setStockDialogError("");
+    setError("");
+    setNotice("");
+
+    // Persist in localStorage before running
+    localStorage.setItem("pending_stock_update_web", JSON.stringify({
+      quantities,
+      timestamp: Date.now()
+    }));
+
+    executeStockUpdate(quantities);
+  };
+
+  // Resume pending stock update if tab was closed/reloaded during in-flight update
+  useEffect(() => {
+    const raw = localStorage.getItem("pending_stock_update_web");
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      const age = Date.now() - (saved.timestamp || 0);
+      if (age > 10 * 60 * 1000) {
+        localStorage.removeItem("pending_stock_update_web");
+        return;
+      }
+      if (saved.quantities && saved.quantities.length > 0) {
+        executeStockUpdate(saved.quantities);
+      } else {
+        localStorage.removeItem("pending_stock_update_web");
+      }
+    } catch (_) {
+      localStorage.removeItem("pending_stock_update_web");
+    }
+  }, []);
+
+  // Prevent accidental tab closure during stock update
+  useEffect(() => {
+    if (!stockWorking) return;
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "Ažuriranje stanja je u toku. Da li ste sigurni da želite napustiti stranicu?";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [stockWorking]);
 
   const dates = useMemo(() => Object.keys(history).sort((a, b) => dateOrder(b).localeCompare(dateOrder(a))), [history]);
   const times = useMemo(() => Object.keys(objectValue(history[selectedDate])).sort((a, b) => b.localeCompare(a)), [history, selectedDate]);
@@ -438,14 +662,100 @@ export default function Obracun() {
         </div>
         <button style={{ ...buttonStyle, display: "block", width: "100%", marginTop: 14, minHeight: 48, color: "white", background: "#176b55", borderColor: "#176b55", fontWeight: 800 }} disabled={saving || loading || !items.length} onClick={saveReport}>{saving ? "Čuvam obračun…" : "Sačuvaj obračun"}</button>
       </section>
+      {isAdmin && <section className="accounting-panel" style={{ ...panelStyle, marginTop: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>5. Stanje pića</h2>
+          <button type="button" style={{ ...buttonStyle, minWidth: 104, color: "white", background: "#176b55", borderColor: "#176b55", fontWeight: 850 }} onClick={() => { setStockDialogError(""); setStockDialogConfirm(false); setStockDialogOpen(true); }}>DODAJ</button>
+        </div>
+        <p style={{ color: "#687974", margin: "0 0 10px", fontSize: 13 }}>Stanje se ažurira uživo iz menija pića.</p>
+        <div style={{ overflowX: "auto" }}><table style={{ width: "100%", minWidth: 0, borderCollapse: "collapse", tableLayout: "fixed" }}>
+          <thead><tr>{[["Ime artikla", "76%"], ["Stanje", "24%"]].map(([heading, width]) => <th key={heading} style={{ ...headerCell, width }}>{heading}</th>)}</tr></thead>
+          <tbody>{menuStockItems.length ? menuStockItems.map((item, index) => <tr key={item.id} style={{ background: index % 2 ? "#f7faf8" : "white" }}>
+            <td style={{ ...cell, fontWeight: 700, overflowWrap: "anywhere" }}>{item.name}</td>
+            <td style={{ ...cell, fontWeight: 800, color: "#176b55", whiteSpace: "nowrap" }}>{formatQuantity(item.stock)}</td>
+          </tr>) : <tr><td style={cell} colSpan={2}>Nema artikala u meniju pića.</td></tr>}</tbody>
+        </table></div>
+      </section>}
     </div>
-    {showSuccess && <div className="animate-fadeIn" role="status" style={{ position: "fixed", inset: 0, zIndex: 30, background: "rgba(0,0,0,.78)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+    {stockWorking && (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(10, 26, 20, 0.88)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 2500,
+          userSelect: "none",
+          pointerEvents: "all"
+        }}
+      >
+        <div
+          style={{
+            width: 52,
+            height: 52,
+            borderRadius: "50%",
+            border: "4px solid rgba(255,255,255,0.2)",
+            borderTopColor: "#ffffff",
+            animation: "spin 0.8s linear infinite",
+            marginBottom: 16
+          }}
+        />
+        <div style={{ color: "#ffffff", fontSize: 22, fontWeight: 800, marginBottom: 8 }}>
+          Ažuriranje stanja pića
+        </div>
+        <div style={{ color: "#ffb74d", fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
+          Sačekajte...
+        </div>
+        {stockStage && stockStage !== "Sačekajte..." && (
+          <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 13 }}>
+            {stockStage}
+          </div>
+        )}
+      </div>
+    )}
+    {showSuccess && <div className="animate-fadeIn" role="status" style={{ position: "fixed", inset: 0, zIndex: 3000, background: "rgba(0,0,0,.78)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ textAlign: "center", padding: 24 }}>
         <div className="animate-checkCircle" style={{ width: 112, height: 112, margin: "0 auto", borderRadius: "50%", background: "#f97316", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 50px rgba(249,115,22,.6)" }}>
           <svg width="62" height="62" viewBox="0 0 52 52" fill="none" aria-hidden="true"><path d="M14 27 L22 35 L39 16" stroke="black" pathLength="100" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" className="animate-drawCheck" /></svg>
         </div>
         <h1 style={{ marginTop: 30, color: "white", fontSize: 32, fontWeight: 900, animation: "textUp .45s ease-out" }}>{sentenceCase(successText)}</h1>
       </div>
+    </div>}
+    {stockDialogOpen && <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !stockBusyId) { setStockDialogOpen(false); setStockDialogConfirm(false); } }} style={{ position: "fixed", zIndex: 25, inset: 0, background: "#101b17a6", display: "grid", placeItems: "center", padding: 14 }}>
+      <section role="dialog" aria-modal="true" aria-labelledby="menu-stock-dialog-title" style={{ width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto", background: "white", borderRadius: 18, padding: 20, boxShadow: "0 24px 70px #0004" }}>
+        <h2 id="menu-stock-dialog-title" style={{ margin: "0 0 8px", fontSize: 21 }}>{stockDialogConfirm ? "Potvrda dodavanja" : "Dodaj piće na stanje"}</h2>
+        {!stockDialogConfirm ? <>
+          <p style={{ margin: "0 0 12px", color: "#718078", fontSize: 13 }}>Unesi količinu za svaki artikal koji dodaješ.</p>
+          <div style={{ border: "1px solid #e2eae6", borderRadius: 12, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+              <thead><tr><th style={{ ...headerCell, width: "68%" }}>Ime artikla</th><th style={{ ...headerCell, width: "32%" }}>Dodaj</th></tr></thead>
+              <tbody>{menuStockItems.length ? menuStockItems.map((item, index) => <tr key={item.id} style={{ background: index % 2 ? "#f7faf8" : "white" }}>
+                <td style={{ ...cell, overflowWrap: "anywhere", fontWeight: 700 }}>{item.name}</td>
+                <td style={cell}><input ref={index === 0 ? firstStockInputRef : undefined} placeholder="Količina" aria-label={`Dodaj na stanje: ${item.name}`} style={{ ...inputStyle, minWidth: 0, padding: "8px 7px" }} inputMode="decimal" value={menuStockInputs[item.id] ?? "0"} disabled={Boolean(stockBusyId || stockWorking)} onFocus={(event) => { if (event.target.value === "0") setMenuStockInputs((current) => ({ ...current, [item.id]: "" })); }} onBlur={(event) => { if (event.target.value === "") setMenuStockInputs((current) => ({ ...current, [item.id]: "0" })); }} onChange={(event) => { setStockDialogError(""); setMenuStockInputs((current) => ({ ...current, [item.id]: event.target.value })); }} /></td>
+              </tr>) : <tr><td style={cell} colSpan={2}>Nema artikala u meniju pića.</td></tr>}</tbody>
+            </table>
+          </div>
+        </> : <>
+          <div style={{ display: "grid", gap: 6, maxHeight: "40vh", overflowY: "auto", paddingRight: 4, margin: "8px 0 14px" }}>{Object.entries(menuStockInputs).filter(([, raw]) => Number(String(raw ?? "").trim().replace(",", ".")) > 0).map(([id, raw]) => {
+            const item = menuStockItems.find((entry) => entry.id === id);
+            return <div key={id} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 10px", background: "#f7faf8", borderRadius: 9, color: "#344b42", fontSize: 13 }}><b>{item?.name || id}</b><span>+{formatQuantity(raw)}</span></div>;
+          })}</div>
+          <p style={{ margin: "14px 0 8px", padding: 13, borderRadius: 11, background: "#f0f7f3", color: "#344b42", lineHeight: 1.55, fontWeight: 600 }}>Da li ste sigurni da želite da dodate unijete količine artikala na stanje?</p>
+        </>}
+        {stockDialogError && <div role="alert" style={{ marginTop: 12, borderRadius: 9, padding: 10, background: "#fff0ef", color: "#982e2a", fontSize: 13 }}>{stockDialogError}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <button type="button" style={buttonStyle} disabled={Boolean(stockBusyId)} onClick={() => { if (stockDialogConfirm) { setStockDialogConfirm(false); setStockDialogOpen(false); } else setStockDialogOpen(false); }}>{stockDialogConfirm ? "Ne, odustani" : "Otkaži"}</button>
+          {!stockDialogConfirm
+            ? <button type="button" style={{ ...buttonStyle, background: "#176b55", borderColor: "#176b55", color: "white" }} disabled={Boolean(stockBusyId) || !menuStockItems.length} onClick={requestMenuStockAdd}>DODAJ</button>
+            : <button type="button" style={{ ...buttonStyle, background: "#176b55", borderColor: "#176b55", color: "white" }} disabled={Boolean(stockBusyId)} onClick={applyMenuStockAdd}>{stockBusyId ? "Dodajem…" : "Da, dodaj"}</button>}
+        </div>
+      </section>
     </div>}
     {dialog && <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }} style={{ position: "fixed", zIndex: 20, inset: 0, background: "#101b17a6", display: "grid", placeItems: "center", padding: 14 }}>
       <section role="dialog" aria-modal="true" aria-labelledby="article-dialog-title" style={{ width: "100%", maxWidth: 460, maxHeight: "90vh", overflowY: "auto", background: "white", borderRadius: 16, padding: 20, boxShadow: "0 24px 70px #0004" }}>

@@ -23,14 +23,14 @@ function readMenu(menu, dataNode) {
   if (menu?.[dataNode] && typeof menu[dataNode] === "object") {
     return { items: menu[dataNode], createAt: String(menu.createAt || ""), flat: true };
   }
-  if (dataNode !== "Podaci") {
+  if (dataNode !== N.MENU_PODACI) {
     return { items: {}, createAt: String(menu?.createAt || ""), flat: true };
   }
   const dated = Object.entries(menu || {})
-    .filter(([key, value]) => key !== "createAt" && key !== "createAtMillis" && value?.Podaci)
+    .filter(([key, value]) => key !== N.MENU_CREATE_AT && key !== N.MENU_CREATE_AT_MILLIS && value?.[N.MENU_PODACI])
     .sort(([a], [b]) => legacyDateValue(b) - legacyDateValue(a));
   return {
-    items: dated[0]?.[1]?.Podaci || {},
+    items: dated[0]?.[1]?.[N.MENU_PODACI] || {},
     createAt: String(menu?.createAt || dated[0]?.[0] || ""),
     flat: false,
   };
@@ -55,6 +55,7 @@ const newEntry = (id, item = {}) => ({
   description: String(item?.description || ""),
   category: String(item?.category || ""),
   price: String(item?.price ?? "0"),
+  [N.MENU_STANJE]: item?.[N.MENU_STANJE] == null ? "" : String(item[N.MENU_STANJE]),
   deleted: false,
 });
 
@@ -84,14 +85,14 @@ export default function Admin() {
   const [message, setMessage] = useState("");
   const [dialogError, setDialogError] = useState("");
   const [modal, setModal] = useState(null);
-  const [addForm, setAddForm] = useState({ category: "", name: "", description: "", price: "" });
+  const [addForm, setAddForm] = useState({ category: "", name: "", description: "", price: "", [N.MENU_STANJE]: "0" });
   const [editValue, setEditValue] = useState("");
   const [bulkAmount, setBulkAmount] = useState("0.1");
   const [bulkDirection, setBulkDirection] = useState(1);
   const [showSuccess, setShowSuccess] = useState(false);
   const [successText, setSuccessText] = useState("");
   const [menuCreateAt, setMenuCreateAt] = useState("");
-  const menuDataNode = menuType === "drinks" ? "Podaci1" : "Podaci";
+  const menuDataNode = menuType === "drinks" ? N.MENU_PODACI_PICE : N.MENU_PODACI;
   const menuDataNodeRef = useRef(menuDataNode);
   const menuVersionForWritesRef = useRef(0);
   const dirtyRef = useRef(false);
@@ -334,7 +335,7 @@ export default function Admin() {
     );
 
     const unsubscribeFood = listenForMenu("food", N.MENU_PODACI);
-    const unsubscribeDrinks = listenForMenu("drinks", "Podaci1");
+    const unsubscribeDrinks = listenForMenu("drinks", N.MENU_PODACI_PICE);
     return () => {
       mounted = false;
       unsubscribeFood();
@@ -461,7 +462,7 @@ export default function Admin() {
 
   const openAddDialog = () => {
     setDialogError("");
-    setAddForm({ category: activeCategory === "Sve" ? "" : activeCategory, name: "", description: "", price: "" });
+    setAddForm({ category: activeCategory === "Sve" ? "" : activeCategory, name: "", description: "", price: "", [N.MENU_STANJE]: "0" });
     setModal({ type: "add" });
   };
 
@@ -475,12 +476,15 @@ export default function Admin() {
     const category = addForm.category.trim();
     const name = addForm.name.trim();
     const price = parsePrice(addForm.price);
-    if (!category || !name || price === null || price < 0) {
-      setDialogError("Unesi kategoriju, naziv i ispravnu cijenu 0 ili veću.");
+    const stock = menuType === "drinks" ? parsePrice(addForm[N.MENU_STANJE]) : null;
+    if (!category || !name || price === null || price < 0 || (menuType === "drinks" && (stock === null || stock < 0))) {
+      setDialogError(menuType === "drinks"
+        ? "Unesi kategoriju, naziv, cijenu i ispravnu količinu na stanju. Vrijednosti ne mogu biti negativne."
+        : "Unesi kategoriju, naziv i ispravnu cijenu 0 ili veću.");
       return;
     }
     const id = `new-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const addedEntry = newEntry(id, { ...addForm, category, name, price: price.toFixed(2) });
+    const addedEntry = newEntry(id, { ...addForm, category, name, price: price.toFixed(2), ...(menuType === "drinks" ? { [N.MENU_STANJE]: stock } : {}) });
     const saved = await persistMenu([...entries, addedEntry], "Artikal je uspješno dodat.");
     if (saved) {
       setSelectedCategory(category);
@@ -544,14 +548,31 @@ export default function Admin() {
         return false;
       }
       const id = item.id.startsWith("new-") ? String(nextId++) : item.id;
-      const savedItem = { name, category, description: item.description.trim(), price };
+      const savedItem = {
+        name, category, description: item.description.trim(), price,
+        ...(menuDataNode === N.MENU_PODACI_PICE && item[N.MENU_STANJE] !== ""
+          ? { [N.MENU_STANJE]: parsePrice(item[N.MENU_STANJE]) ?? item[N.MENU_STANJE] }
+          : {}),
+      };
       if (flatMenuRef.current) {
         if (item.id.startsWith("new-")) {
+          if (menuDataNode === N.MENU_PODACI_PICE) {
+            const stock = parsePrice(item[N.MENU_STANJE]);
+            if (stock === null || stock < 0) {
+              setDialogError(`Unesi ispravnu količinu na stanju za piće „${name}”.`);
+              return false;
+            }
+            savedItem[N.MENU_STANJE] = stock;
+          }
           updates[`${menuDataNode}/${id}`] = savedItem;
         } else {
           const original = originalEntriesRef.current[item.id];
           if (!original) {
-            updates[`${menuDataNode}/${id}`] = savedItem;
+            const path = `${menuDataNode}/${id}/`;
+            updates[`${path}name`] = name;
+            updates[`${path}category`] = category;
+            updates[`${path}description`] = savedItem.description;
+            updates[`${path}price`] = price;
           } else {
             const path = `${menuDataNode}/${id}/`;
             if (name !== original.name.trim()) updates[`${path}name`] = name;
@@ -572,6 +593,9 @@ export default function Admin() {
         category: item.category.trim(),
         description: item.description.trim(),
         price: parsePrice(item.price),
+        ...(menuDataNode === N.MENU_PODACI_PICE && item[N.MENU_STANJE] !== ""
+          ? { [N.MENU_STANJE]: parsePrice(item[N.MENU_STANJE]) }
+          : {}),
       }]));
     }
     const now = new Date();
@@ -594,6 +618,7 @@ export default function Admin() {
           category: item.category.trim(),
           description: item.description.trim(),
           price: parsePrice(item.price),
+          ...(menuDataNode === N.MENU_PODACI_PICE && item[N.MENU_STANJE] !== "" ? { [N.MENU_STANJE]: parsePrice(item[N.MENU_STANJE]) } : {}),
         }]));
         localStorage.setItem(`admin-menu-cache:${N.ROOT_RESTORAN}:${menuDataNode}`, JSON.stringify({
           version: String(now.getTime()), createAt, items: cachedItems, flat: true,
@@ -774,6 +799,7 @@ export default function Admin() {
                 <label style={styles.label}>Naziv artikla<input style={styles.input} value={addForm.name} onChange={(event) => setAddForm({ ...addForm, name: event.target.value })} /></label>
                 <label style={styles.label}>Opis<textarea style={{ ...styles.input, minHeight: 72, resize: "vertical" }} value={addForm.description} onChange={(event) => setAddForm({ ...addForm, description: event.target.value })} /></label>
                 <label style={styles.label}>Cijena (€)<input style={styles.input} inputMode="decimal" value={addForm.price} onChange={(event) => setAddForm({ ...addForm, price: event.target.value })} placeholder="npr. 4,50" /></label>
+                {menuType === "drinks" && <label style={styles.label}>Količina na stanju<input style={styles.input} inputMode="decimal" value={addForm[N.MENU_STANJE]} onFocus={(event) => { if (event.target.value === "0") setAddForm((current) => ({ ...current, [N.MENU_STANJE]: "" })); }} onBlur={(event) => { if (event.target.value === "") setAddForm((current) => ({ ...current, [N.MENU_STANJE]: "0" })); }} onChange={(event) => setAddForm((current) => ({ ...current, [N.MENU_STANJE]: event.target.value }))} placeholder="npr. 10" /></label>}
               </div>
             </>}
             {modal.type === "bulk" && <>
