@@ -438,30 +438,7 @@ export default function Konobari() {
       <main style={{ minHeight: "100vh", padding: "0 0 48px", background: "#f2f2f2", fontFamily: "Inter,system-ui,sans-serif" }}>
         {/* Header */}
         <div style={{ maxWidth: 820, margin: "0 auto", padding: "20px 16px 0", width: "100%", boxSizing: "border-box" }}>
-          {/* Return directly to Waiters list */}
-          <button
-            onClick={() => navigate("/konobari")}
-            style={{
-              background: "white",
-              border: "1px solid #d4e0da",
-              borderRadius: 12,
-              padding: "8px 18px",
-              fontSize: 14,
-              fontWeight: 700,
-              color: "#173C32",
-              cursor: "pointer",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 14,
-              boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
-              transition: "transform 0.1s ease",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.transform = "translateX(-2px)")}
-            onMouseLeave={(e) => (e.currentTarget.style.transform = "translateX(0px)")}
-          >
-            ← Nazad
-          </button>
+          
           <div style={{ background: "linear-gradient(135deg, #123d32, #176b55)", color: "white", padding: "20px 24px", borderRadius: 20, marginBottom: 12, textAlign: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.15)" }}>
             <div style={{ fontSize: 12, opacity: 0.8, letterSpacing: ".12em", fontWeight: 800 }}>RAČUNI KONOBARA</div>
             <div style={{ fontSize: "clamp(22px, 5vw, 30px)", fontWeight: 850, marginTop: 5 }}>{selectedWaiter.name}</div>
@@ -710,29 +687,7 @@ export default function Konobari() {
   return (
     <main style={{ minHeight: "100vh", padding: "22px 16px 48px", background: "#f4f7f6", color: "#17231f", fontFamily: "Inter,system-ui,sans-serif" }}>
       <div style={{ maxWidth: 820, margin: "0 auto" }}>
-        <button
-          onClick={() => navigate("/stats")}
-          style={{
-            background: "white",
-            border: "1px solid #d4e0da",
-            borderRadius: 12,
-            padding: "8px 18px",
-            fontSize: 14,
-            fontWeight: 700,
-            color: "#173C32",
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 14,
-            boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
-            transition: "transform 0.1s ease",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.transform = "translateX(-2px)")}
-          onMouseLeave={(e) => (e.currentTarget.style.transform = "translateX(0px)")}
-        >
-          ← Nazad
-        </button>
+        
         <header style={{ background: "#fff", border: "1px solid #e2eae6", borderRadius: 18, padding: 20, marginBottom: 14, boxShadow: "0 8px 24px #173d310b" }}>
           <div style={{ color: "#547268", fontSize: 12, fontWeight: 800, letterSpacing: ".08em" }}>PREGLED ZARADE</div>
           <h1 style={{ margin: "6px 0 4px", fontSize: 25 }}>Konobari</h1>

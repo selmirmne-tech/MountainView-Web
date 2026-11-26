@@ -148,4 +148,10 @@ export const smjenaRef = () =>
   child(rootRestoran(), N.SMJENA);
 export const smjenaPath = () =>
   `${N.ROOT_RESTORAN}/${N.SMJENA}`;
+
+// OBRACUN
+export const obracunRestoran = () =>
+  child(rootRestoran(), N.OBRACUN);
+export const obracunDnevni = (datumKey) =>
+  child(obracunRestoran(), String(datumKey));
   

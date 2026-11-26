@@ -34,3 +34,5 @@ export const MJESECI_RESTORAN = "MjeseciRestoran";
 export const APP_UPDATE_RESTORAN = "AppUpdateRestoran";
 export const NOTIFIKACIJA = "notifikacija";
 export const SMJENA = "Smjena";
+export const OBRACUN = "Obracun";
+export const OBRACUN_LAST_DATE = "ZadnjiObracunDatum";

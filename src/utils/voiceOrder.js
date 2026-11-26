@@ -7,7 +7,7 @@ const UNIT_WORDS = new Map([
 ]);
 const NUMBER_WORDS = new Map();
 const addNumber = (value, words) => words.forEach((word) => NUMBER_WORDS.set(word, String(value)));
-addNumber(1, ["jedan", "jedna", "jedno", "jednu", "one"]);
+addNumber(1, ["jedan", "jedna", "jedno", "jednu", "jednom", "one"]);
 addNumber(2, ["dva", "dvije", "dve", "dvoje", "two"]);
 addNumber(3, ["tri", "three"]);
 addNumber(4, ["cetiri", "cetri", "four"]);
@@ -26,6 +26,10 @@ const IGNORED = new Set([
 const COMMANDS = new Set(["molim", "please", "daj", "dajte", "dodaj", "dodajte", "zelim", "hocu", "moze", "poruci", "porucite"]);
 const CONNECTORS = new Set(["i", "and", "plus", "pa", "te"]);
 const COUNT_WORDS = new Set(["kom", "komad", "komada", "komadici", "komadica", "komadima", "piece", "pieces", "porcija", "porcije", "porciju", "porcijom", "porciji", "porcijama", "portion", "portions", "serving", "servings"]);
+const CONTAINER_WORDS = new Set([
+  "flasa", "flase", "flasu", "flasom", "casa", "case", "casu", "casom", "boca", "boce", "bocu", "bocom",
+  "krigla", "krigle", "kriglu", "kriglom", "solja", "solje", "solju", "soljom"
+]);
 const NUMBER_TOKEN = /^\d+(?:\.\d+)?$/;
 const MEASURE_TOKEN = /^\d+(?:\.\d+)?(?:cm|mm|ml|cl|l|gr|kg)$/;
 
@@ -36,11 +40,53 @@ function latin(value) {
     .replace(/đ/g, "dj").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+export function stemWord(word) {
+  if (!word || word.length <= 2) return word;
+
+  // Specific restaurant / product canonicalizations
+  if (word === "coca" || word === "koka") return "coca";
+  if (word === "cola" || word === "kole" || word === "kolu" || word === "kola") return "cola";
+  if (word === "kokakola" || word === "cocacola") return "coca cola";
+  if (["pica", "picca", "piza", "pitsa", "pice", "pize", "picu"].includes(word)) return "pizza";
+  if (["feferona", "feferone", "feferoni", "feferon"].includes(word)) return "feferon";
+  if (["kifla", "kifle", "kiflu", "kifli"].includes(word)) return "kifl";
+  if (["pivo", "piva", "pive", "pivom"].includes(word)) return "piv";
+  if (["kafa", "kafe", "kafu", "kafi", "kava", "kave", "kavu"].includes(word)) return "kaf";
+  if (["caj", "caja", "cajevi", "cajeve"].includes(word)) return "caj";
+  if (["sok", "soka", "sokovi", "sokove"].includes(word)) return "sok";
+  if (["vino", "vina", "vine", "vinom"].includes(word)) return "vin";
+  if (["voda", "vode", "vodu", "vodom"].includes(word)) return "vod";
+  if (["kisela", "kisele", "kiselu"].includes(word)) return "kisel";
+  if (["corba", "corbe", "corbu"].includes(word)) return "corb";
+  if (["teleca", "telece", "telecu"].includes(word)) return "telec";
+  if (["cevap", "cevapi", "cevapa", "cevape"].includes(word)) return "cevap";
+  if (["pljeskavica", "pljeskavice", "pljeskavicu"].includes(word)) return "pljeskavic";
+  if (["palacinka", "palacinke", "palacinku"].includes(word)) return "palacink";
+  if (["sendvic", "sendvica", "sendvice", "sendvici"].includes(word)) return "sendvic";
+  if (["pomfrit", "pomfrita"].includes(word)) return "pomfrit";
+  if (["pavlaka", "pavlake", "pavlaku", "pavlaci"].includes(word)) return "pavlak";
+  if (word === "jaja") return "jaje";
+
+  // Generic stemming rules for regular Serbian case endings (length >= 4)
+  if (word.length >= 4) {
+    if (word.endsWith("ovima") || word.endsWith("evima")) return word.slice(0, -5);
+    if (word.endsWith("ama") || word.endsWith("ima") || word.endsWith("ovi") || word.endsWith("ove")) return word.slice(0, -3);
+    if (word.endsWith("om") || word.endsWith("em")) return word.slice(0, -2);
+    if (word.endsWith("a") || word.endsWith("e") || word.endsWith("i") || word.endsWith("o") || word.endsWith("u")) {
+      return word.slice(0, -1);
+    }
+  }
+  return word;
+}
+
 function canonical(value) {
   if (value === "jaja") return "jaje";
-  if (["pica", "picca", "piza", "pitsa", "p***"].includes(value)) return "pizza";
+  if (["pica", "picca", "piza", "pitsa", "p***", "pizza"].includes(value)) return "pizza";
   if (["pavlake", "pavlaku", "pavlaci"].includes(value)) return "pavlaka";
   if (["feferona", "feferone", "feferon"].includes(value)) return "feferoni";
+  if (value === "koka") return "coca";
+  if (["kole", "kolu", "kola"].includes(value)) return "cola";
+  if (value === "bjanka" || value === "bianca") return "bianca";
   return UNIT_WORDS.get(value) || value;
 }
 
@@ -80,54 +126,60 @@ function tokens(text) {
 
 function isNumber(value) { return NUMBER_TOKEN.test(value); }
 function isMeasure(value) { return MEASURE_TOKEN.test(value); }
-function menuWords(menu) {
-  const result = new Set();
-  for (const item of menu || []) for (const token of tokens(item.name).map((entry) => entry.value)) {
-    if (!isNumber(token) && !isMeasure(token)) result.add(token);
-  }
-  return result;
-}
+
 function appearsInMenu(value, words) {
-  for (const word of words) if (word === value || word.includes(value) || value.includes(word) || similarity(value, word) >= 0.9) return true;
+  for (const word of words) {
+    if (word === value || word.includes(value) || value.includes(word) || similarity(value, word) >= 0.80) return true;
+  }
   return false;
 }
+
 function dynamicConnectors(source, menu) {
-  const known = menuWords(menu);
   const skip = new Set();
   source.forEach((token, index) => {
     const value = token.value;
-    if (!/^[a-z]+$/.test(value) || IGNORED.has(value) || appearsInMenu(value, known)) return;
-    const hasCountBefore = source.slice(Math.max(0, index - 3), index)
-      .some((entry) => isNumber(entry.value) && !isMeasure(entry.value));
-    if (!hasCountBefore) return;
-    const hasMenuWordAfter = source.slice(index + 1, index + 4)
-      .some((entry) => appearsInMenu(entry.value, known));
-    if (hasMenuWordAfter) skip.add(index);
+    // Only treat as dynamic connector if it's explicitly a container word or count word
+    if (CONTAINER_WORDS.has(value) || COUNT_WORDS.has(value)) {
+      skip.add(index);
+    }
   });
   return skip;
 }
 
 function titlePositions(source, itemName, dynamicSkip) {
-  const title = tokens(itemName).map((entry) => entry.value);
+  const baseTitle = tokens(itemName).map((entry) => entry.value);
   const found = [];
-  if (!title.length) return found;
-  for (let start = 0; start < source.length; start += 1) {
-    let titleIndex = 0;
-    let sourceIndex = start;
-    const positions = [];
-    while (titleIndex < title.length && sourceIndex < source.length) {
-      const value = source[sourceIndex].value;
-      if (dynamicSkip.has(sourceIndex)) { sourceIndex += 1; continue; }
-      if (CONNECTORS.has(value) && value !== title[titleIndex]) { sourceIndex += 1; continue; }
-      if (["pizza", "pica"].includes(canonical(value))
-          && !["pizza", "pica"].includes(canonical(title[titleIndex]))) { sourceIndex += 1; continue; }
-      const heard = canonical(value); const wanted = canonical(title[titleIndex]);
-      if (!(heard === wanted || (!(isNumber(heard) || isMeasure(heard)) && suggestionSimilarity(heard, wanted) >= 0.80))) break;
-      positions.push(sourceIndex);
-      titleIndex += 1;
-      sourceIndex += 1;
+  if (!baseTitle.length) return found;
+
+  // Generate variants for word order variations (e.g. "Pizza 4 u 1 45cm" vs "4 u 1 Pizza 45cm")
+  const titleVariants = [baseTitle];
+  if (baseTitle.length > 1 && ["pizza", "pica"].includes(baseTitle[0])) {
+    const withoutPizza = baseTitle.slice(1);
+    titleVariants.push([...withoutPizza, baseTitle[0]]);
+    if (baseTitle.length >= 3) {
+      titleVariants.push([...baseTitle.slice(1, -1), baseTitle[0], baseTitle[baseTitle.length - 1]]);
     }
-    if (titleIndex === title.length) found.push(new Set(positions));
+  }
+
+  for (const title of titleVariants) {
+    for (let start = 0; start < source.length; start += 1) {
+      let titleIndex = 0;
+      let sourceIndex = start;
+      const positions = [];
+      while (titleIndex < title.length && sourceIndex < source.length) {
+        const value = source[sourceIndex].value;
+        if (dynamicSkip.has(sourceIndex)) { sourceIndex += 1; continue; }
+        if (CONNECTORS.has(value) && value !== title[titleIndex]) { sourceIndex += 1; continue; }
+        if (["pizza", "pica"].includes(canonical(value))
+            && !["pizza", "pica"].includes(canonical(title[titleIndex]))) { sourceIndex += 1; continue; }
+        const heard = canonical(value); const wanted = canonical(title[titleIndex]);
+        if (!(heard === wanted || (!(isNumber(heard) || isMeasure(heard)) && suggestionSimilarity(heard, wanted) >= 0.80))) break;
+        positions.push(sourceIndex);
+        titleIndex += 1;
+        sourceIndex += 1;
+      }
+      if (titleIndex === title.length) found.push(new Set(positions));
+    }
   }
   return found;
 }
@@ -136,27 +188,34 @@ function coreTokens(text) {
   const core = tokens(text).map((entry) => entry.value).filter((value) => !isNumber(value) && !isMeasure(value) && !IGNORED.has(value));
   return core.length > 1 ? core.filter((value) => !["pizza", "pica"].includes(canonical(value))) : core;
 }
+
 function meaningfulTokens(source, skip) {
   let meaningful = source.map((entry, index) => ({ ...entry, sourceIndex: index }))
     .filter((entry, index) => !skip.has(index) && !isNumber(entry.value) && !isMeasure(entry.value) && !IGNORED.has(entry.value));
   if (meaningful.length > 1) meaningful = meaningful.filter((entry) => !["pizza", "pica"].includes(canonical(entry.value)));
   return meaningful;
 }
-function similarity(a, b) {
+
+export function similarity(a, b) {
   a = canonical(a); b = canonical(b);
   if (a === b) return 1;
-  if (a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))) return 0.82;
-  const row = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i += 1) {
+  const sa = stemWord(a);
+  const sb = stemWord(b);
+  if (sa === sb) return 1;
+  if (sa.length >= 3 && sb.length >= 3 && (sa.includes(sb) || sb.includes(sa))) return 0.85;
+
+  const row = Array.from({ length: sb.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= sa.length; i += 1) {
     let previous = row[0]; row[0] = i;
-    for (let j = 1; j <= b.length; j += 1) {
+    for (let j = 1; j <= sb.length; j += 1) {
       const old = row[j];
-      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (sa[i - 1] === sb[j - 1] ? 0 : 1));
       previous = old;
     }
   }
-  return 1 - row[b.length] / Math.max(a.length, b.length, 1);
+  return 1 - row[sb.length] / Math.max(sa.length, sb.length, 1);
 }
+
 function suggestionSimilarity(a, b) {
   const spokenKey = canonical(a).replace(/k/g, "c").replace(/qu/g, "c").replace(/ph/g, "f").replace(/w/g, "v").replace(/(.)\1+/g, "$1");
   const menuKey = canonical(b).replace(/k/g, "c").replace(/qu/g, "c").replace(/ph/g, "f").replace(/w/g, "v").replace(/(.)\1+/g, "$1");
@@ -179,39 +238,67 @@ function matchTokenLists(heard, wanted, threshold = 0.72) {
   }
   return total / Math.max(heard.length, 1);
 }
+
 function quantityFor(source, span, item, dynamicSkip, allSpans = [span], used = new Set()) {
   const ownTitle = new Set(titlePositions(source, item.name, dynamicSkip).flatMap((set) => [...set]));
   const titleIndexes = [...ownTitle];
   const bounds = titleIndexes.length ? { start: Math.min(...titleIndexes), end: Math.max(...titleIndexes) } : span;
-  let selected = null; let bestDistance = Infinity;
-  source.forEach((entry, index) => {
-    if (used.has(index) || ownTitle.has(index) || !isNumber(entry.value) || isMeasure(entry.value)) return;
-    const distance = index < bounds.start ? bounds.start - index : index > bounds.end ? index - bounds.end : 0;
-    if (distance === 0 || distance > 3) return;
-    if (index > bounds.end && distance > 1) return;
-    if (index < bounds.start && distance > 2) return;
 
-    // A number followed by a connector/count word and another item belongs to that next item.
-    const nextSpan = allSpans.filter((candidate) => candidate.start > index && candidate.start > span.start
-      && candidate.start - index <= 4).sort((a, b) => a.start - b.start)[0];
-    if (nextSpan && nextSpan.start !== span.start) {
-      let prefixPhrase = true;
-      for (let between = index + 1; between < nextSpan.start; between += 1) {
-        const word = source[between].value;
-        if (dynamicSkip.has(between) || CONNECTORS.has(word) || COUNT_WORDS.has(word)
-            || COMMANDS.has(word) || isMeasure(word)) continue;
-        prefixPhrase = false; break;
+  // Find the previous and next item spans to establish non-overlapping boundaries
+  const otherSpans = allSpans.filter(s => s !== span && !(s.start === span.start && s.end === span.end));
+  const prevSpans = otherSpans.filter(s => s.end < bounds.start).sort((a, b) => b.end - a.end);
+  const nextSpans = otherSpans.filter(s => s.start > bounds.end).sort((a, b) => a.start - b.start);
+  const minBoundary = prevSpans.length ? prevSpans[0].end + 1 : 0;
+  const maxBoundary = nextSpans.length ? nextSpans[0].start - 1 : source.length - 1;
+
+  // 1. Check for immediate prefix quantity: e.g. "2 kifle", "dvije telece corbe"
+  // If there is a number between minBoundary and bounds.start, it is naturally a prefix quantity for this item!
+  for (let i = bounds.start - 1; i >= Math.max(minBoundary, bounds.start - 3); i -= 1) {
+    if (used.has(i)) break;
+    const valStr = source[i].value;
+    if (CONNECTORS.has(valStr) || COUNT_WORDS.has(valStr) || CONTAINER_WORDS.has(valStr)) continue;
+    if (isNumber(valStr) && !isMeasure(valStr)) {
+      const val = Number(valStr);
+      if (val >= 1 && val <= 99) {
+        used.add(i);
+        return { index: i, value: val };
       }
-      if (prefixPhrase) return;
     }
+    break;
+  }
+
+  // 2. Check for immediate suffix quantity: e.g. "kifle 2", "feferone 3", "teleca corba 2"
+  // Only valid if between bounds.end and maxBoundary
+  for (let i = bounds.end + 1; i <= Math.min(maxBoundary, bounds.end + 2); i += 1) {
+    if (used.has(i)) break;
+    const valStr = source[i].value;
+    if (CONNECTORS.has(valStr) || COUNT_WORDS.has(valStr)) continue;
+    if (isNumber(valStr) && !isMeasure(valStr)) {
+      const val = Number(valStr);
+      if (val >= 1 && val <= 99) {
+        used.add(i);
+        return { index: i, value: val };
+      }
+    }
+    break;
+  }
+
+  // 3. Fallback search within [minBoundary, maxBoundary]
+  let selected = null; let bestDistance = Infinity;
+  for (let index = minBoundary; index <= maxBoundary; index += 1) {
+    const entry = source[index];
+    if (used.has(index) || ownTitle.has(index) || !isNumber(entry.value) || isMeasure(entry.value)) continue;
+    const distance = index < bounds.start ? bounds.start - index : index > bounds.end ? index - bounds.end : 0;
+    if (distance === 0 || distance > 3) continue;
 
     if (distance < bestDistance || (distance === bestDistance && index < bounds.start)) {
       selected = { index, value: Number(entry.value) }; bestDistance = distance;
     }
-  });
+  }
   if (selected) used.add(selected.index);
   return selected;
 }
+
 function quantityNearSpan(source, span, used = new Set()) {
   let found = null; let bestDistance = Infinity;
   source.forEach((entry, index) => {
@@ -225,9 +312,11 @@ function quantityNearSpan(source, span, used = new Set()) {
   if (found) used.add(found.index);
   return found?.value || 1;
 }
+
 function isAllowedExtra(value) {
-  return isNumber(value) || isMeasure(value) || IGNORED.has(value) || CONNECTORS.has(value) || UNIT_WORDS.has(value) || COMMANDS.has(value);
+  return isNumber(value) || isMeasure(value) || IGNORED.has(value) || CONNECTORS.has(value) || UNIT_WORDS.has(value) || COMMANDS.has(value) || CONTAINER_WORDS.has(value);
 }
+
 function suggest(query, menu, limit = 6) {
   if (!query.length) return menu.slice(0, limit).map((item) => ({ item, score: 0 }));
   const ranked = [];
@@ -278,7 +367,6 @@ export function resolveVoiceOrder(transcript, menu) {
       return { matches: [{ item: candidates[0].item, quantity: quantityFor(source, span, candidates[0].item, dynamicSkip)?.value || 1 }], suggestions: [] };
     }
     if (candidates.length > 1) return { matches: [], suggestions: candidates.slice(0, 8) };
-    // A single spoken word that is only a weak sound-alike should open choices, not auto-add.
     return { matches: [], suggestions: suggest([heard[0].value], menu) };
   }
 
@@ -342,7 +430,6 @@ export function resolveVoiceOrder(transcript, menu) {
     unresolvedTerms,
   };
 }
-
 
 export function displayVoiceTranscript(transcript) {
   return String(transcript ?? "").replace(/p\*{2,}[a-z]*/gi, "pizza");
