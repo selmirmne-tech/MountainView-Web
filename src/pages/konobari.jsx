@@ -361,11 +361,46 @@ export default function Konobari() {
         [`${N.COMPLETE_ORDERS_RESTORAN}/${userId}/${orderId}/stornirao`]: adminName,
         [`${N.COMPLETE_ORDERS_RESTORAN}/${userId}/${orderId}/${N.RECEIPT_STOCK_RETURNED}`]: returnStock,
       };
-      stockSnapshots.forEach(([menuItemId, itemSnapshot]) => {
-        if (!itemSnapshot.exists()) return;
-        const currentStock = parsePrice(itemSnapshot.child(N.MENU_STANJE).val());
-        updates[menuDrinkStockPath(menuItemId)] = currentStock + stockReturnQuantities.get(menuItemId);
-      });
+      if (returnStock) {
+        stockSnapshots.forEach(([menuItemId, itemSnapshot]) => {
+          if (!itemSnapshot.exists()) return;
+          const currentStock = parsePrice(itemSnapshot.child(N.MENU_STANJE).val());
+          const addedQty = stockReturnQuantities.get(menuItemId) || 0;
+          updates[menuDrinkStockPath(menuItemId)] = Math.round((currentStock + addedQty) * 100) / 100;
+        });
+
+        // Ažuriraj dnevni obračun za danas: stornirani artikli se tretiraju kao UBAČENO (povećava se ubaceno, novo, ukupno, ostalo)
+        try {
+          const pad = (num) => String(num).padStart(2, "0");
+          const todayIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+          const obracunArtikliPath = `${N.ROOT_RESTORAN}/${N.OBRACUN}/${todayIso}/artikli`;
+
+          for (const [menuItemId, addedQty] of stockReturnQuantities.entries()) {
+            const snapshotEntry = stockSnapshots.find((s) => s[0] === menuItemId);
+            const currentStock = snapshotEntry && snapshotEntry[1].exists() ? parsePrice(snapshotEntry[1].child(N.MENU_STANJE).val()) : 0;
+            const targetArtikalSnap = await get(child(child(obracunRestoran(), todayIso), `artikli/${menuItemId}`));
+            const targetArtikal = targetArtikalSnap.exists() ? targetArtikalSnap.val() : null;
+
+            const prevNovo = targetArtikal?.novo !== undefined ? Number(targetArtikal.novo) : currentStock;
+            const prevUbaceno = targetArtikal?.ubaceno !== undefined ? Number(targetArtikal.ubaceno) : 0;
+            const prevUkupno = targetArtikal?.ukupno !== undefined ? Number(targetArtikal.ukupno) : currentStock;
+            const prevOstalo = targetArtikal?.ostalo !== undefined ? Number(targetArtikal.ostalo) : currentStock;
+
+            const calcNovo = Math.round((prevNovo + addedQty) * 100) / 100;
+            const calcUbaceno = Math.round((prevUbaceno + addedQty) * 100) / 100;
+            const calcUkupno = Math.round((prevUkupno + addedQty) * 100) / 100;
+            const calcOstalo = Math.round((prevOstalo + addedQty) * 100) / 100;
+
+            updates[`${obracunArtikliPath}/${menuItemId}/novo`] = calcNovo;
+            updates[`${obracunArtikliPath}/${menuItemId}/ubaceno`] = calcUbaceno;
+            updates[`${obracunArtikliPath}/${menuItemId}/ukupno`] = calcUkupno;
+            updates[`${obracunArtikliPath}/${menuItemId}/ostalo`] = calcOstalo;
+            updates[`${obracunArtikliPath}/${menuItemId}/stanje`] = calcNovo;
+          }
+        } catch (obracunErr) {
+          console.warn("WEB_STORNO_OBRACUN_UPDATE_FAILED", obracunErr);
+        }
+      }
 
       stage = "Upis storna";
       setStornoStage("Upis storna i oslobađanje kase…");

@@ -118,30 +118,31 @@ function downloadBeverageStockPdf(items, title = "Stanje artikala", customDateTi
     ctx.textAlign = "right"; ctx.font = "16px Arial"; ctx.fillStyle = "#64748b";
     ctx.fillText(`Strana ${numberOfPage}`, pageW - 60, pageH - 35);
     const rect = (x, y, w, h, fill = "#f8fafc") => { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h); };
-    let x = 60; const headerY = 175; const headerH = 45;
+    let x = 60; const headerY = 175; const headerH = 48;
+    ctx.font = "bold 20px Arial";
     for (let i = 0; i < 3; i++) {
       ctx.fillStyle = "#176b55"; ctx.fillRect(x, headerY, widths[i], headerH);
       ctx.strokeStyle = "#125442"; ctx.strokeRect(x, headerY, widths[i], headerH);
       ctx.fillStyle = "white"; ctx.textAlign = i === 1 ? "left" : "center";
-      const tx = i === 1 ? x + 15 : x + widths[i] / 2;
-      ctx.fillText(labels[i], tx, headerY + headerH / 2, widths[i] - 20);
+      const tx = i === 1 ? x + 18 : x + widths[i] / 2;
+      ctx.fillText(labels[i], tx, headerY + headerH / 2, widths[i] - 24);
       x += widths[i];
     }
     return { canvas, ctx, rect, y: headerY + headerH };
   };
 
   const drawRow = (p, item, index) => {
-    let x = 60; const rowH = 36;
+    let x = 60; const rowH = 38;
     const isOdd = index % 2 === 1; const bg = isOdd ? "#f8fafc" : "#ffffff";
-    const values = [String(index + 1), item.name, formatQuantity(item.stock)];
+    const values = [String(index + 1), item.name, String(Math.round(item.stock))];
     p.ctx.font = "17px Arial";
     values.forEach((val, col) => {
       p.rect(x, p.y, widths[col], rowH, bg);
       p.ctx.fillStyle = col === 2 && Number(val) < 6 ? "#d32f2f" : "#1e293b";
       p.ctx.font = col === 2 ? "bold 17px Arial" : "17px Arial";
       p.ctx.textAlign = col === 1 ? "left" : "center";
-      const tx = col === 1 ? x + 15 : x + widths[col] / 2;
-      p.ctx.fillText(val, tx, p.y + rowH / 2, widths[col] - 20);
+      const tx = col === 1 ? x + 18 : x + widths[col] / 2;
+      p.ctx.fillText(val, tx, p.y + rowH / 2, widths[col] - 24);
       x += widths[col];
     });
     p.y += rowH;
@@ -204,18 +205,38 @@ function downloadPdfFile(title, dateTime, items, report, fileName = title, saved
     }
     ctx.textAlign = "right"; ctx.fillText(`Strana ${numberOfPage}`, pageW - 42, pageH - 28);
     const rect = (x, y, w, h, fill = "#e8f4ef") => { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h); ctx.strokeStyle = "#9eada5"; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, w, h); };
-    const page = { canvas, ctx, rect, y: 188 };
-    ctx.textAlign = "center"; ctx.font = "bold 17px Arial"; ctx.fillStyle = "#20362f";
+    const page = { canvas, ctx, rect, y: 194 };
+    ctx.textAlign = "center"; ctx.font = "bold 16px Arial"; ctx.fillStyle = "#20362f";
     let x = 40;
-    for (let i = 0; i < 7; i++) { rect(x, 122, widths[i], 66); ctx.fillStyle = "#20362f"; ctx.textAlign = i === 1 ? "left" : "center"; ctx.fillText(labels[i], i === 1 ? x + 10 : x + widths[i] / 2, 155, widths[i] - 16); x += widths[i]; }
-    const soldW = widths[7] + widths[8] + widths[9]; rect(x, 122, soldW, 27); ctx.fillStyle = "#20362f"; ctx.fillText("PRODATO", x + soldW / 2, 136);
+    const headerH = 72;
+    for (let i = 0; i < 7; i++) {
+      rect(x, 122, widths[i], headerH);
+      ctx.fillStyle = "#20362f";
+      ctx.textAlign = i === 1 ? "left" : "center";
+      ctx.fillText(labels[i], i === 1 ? x + 10 : x + widths[i] / 2, 122 + headerH / 2, widths[i] - 12);
+      x += widths[i];
+    }
+    const soldW = widths[7] + widths[8] + widths[9];
+    const soldTopH = 30;
+    const soldSubH = headerH - soldTopH;
+    rect(x, 122, soldW, soldTopH);
+    ctx.fillStyle = "#20362f";
+    ctx.fillText("PRODATO", x + soldW / 2, 122 + soldTopH / 2);
     let sx = x;
-    for (let i = 7; i <= 9; i++) { rect(sx, 149, widths[i], 39); ctx.fillStyle = "#20362f"; ctx.fillText(labels[i], sx + widths[i] / 2, 168, widths[i] - 8); sx += widths[i]; }
-    rect(x + soldW, 122, widths[10], 66); ctx.fillStyle = "#20362f"; ctx.fillText(labels[10], x + soldW + widths[10] / 2, 155, widths[10] - 8);
+    for (let i = 7; i <= 9; i++) {
+      rect(sx, 122 + soldTopH, widths[i], soldSubH);
+      ctx.fillStyle = "#20362f";
+      ctx.fillText(labels[i], sx + widths[i] / 2, 122 + soldTopH + soldSubH / 2, widths[i] - 8);
+      sx += widths[i];
+    }
+    rect(x + soldW, 122, widths[10], headerH);
+    ctx.fillStyle = "#20362f";
+    ctx.fillText(labels[10], x + soldW + widths[10] / 2, 122 + headerH / 2, widths[10] - 8);
     return page;
   };
   const drawRow = (page, item, index) => {
-    const values = [index + 1, item.naziv, item.jedinica_mjere, formatQuantity(item.stanje_prethodno), formatQuantity(item.novo), formatQuantity(item.ubaceno), formatQuantity(item.ukupno), formatQuantity(item.kolicina), `${money(item.cijena)} €`, `${money(item.vrijednost)} €`, formatQuantity(item.ostalo)];
+    const ostaloWhole = String(Math.round(number(item.ostalo)));
+    const values = [index + 1, item.naziv, item.jedinica_mjere, formatQuantity(item.stanje_prethodno), formatQuantity(item.novo), formatQuantity(item.ubaceno), formatQuantity(item.ukupno), formatQuantity(item.kolicina), `${money(item.cijena)} €`, `${money(item.vrijednost)} €`, ostaloWhole];
     let x = 40; page.ctx.font = "16px Arial"; page.ctx.textAlign = "center"; page.ctx.fillStyle = "#25364a";
     values.forEach((value, column) => { page.rect(x, page.y, widths[column], 31, index % 2 ? "#f5f8f7" : "#fff"); page.ctx.fillStyle = "#25364a"; page.ctx.textAlign = column === 1 ? "left" : "center"; page.ctx.fillText(String(value ?? ""), column === 1 ? x + 10 : x + widths[column] / 2, page.y + 16, widths[column] - 16); x += widths[column]; });
     page.y += 31;
@@ -304,7 +325,7 @@ export default function Obracun() {
   const [stockEditError, setStockEditError] = useState("");
   const [stockWorking, setStockWorking] = useState(false);
   const [stockStage, setStockStage] = useState("");
-  const [showDailyHistory, setShowDailyHistory] = useState(false);
+  const [showDailyHistory, setShowDailyHistory] = useState(true);
   const firstStockInputRef = useRef(null);
   const firstStockEditInputRef = useRef(null);
 
@@ -383,7 +404,8 @@ export default function Obracun() {
           const rows = [];
           snapshot.forEach((itemSnapshot) => {
             const item = objectValue(itemSnapshot.val());
-            rows.push({ id: itemSnapshot.key, name: String(item.name || itemSnapshot.key), stock: number(item[N.MENU_STANJE]) });
+            const price = number(item.price || item.cijena || 0);
+            rows.push({ id: itemSnapshot.key, name: String(item.name || itemSnapshot.key), stock: number(item[N.MENU_STANJE]), price });
           });
           rows.sort((a, b) => /^d+$/.test(a.id) && /^d+$/.test(b.id)
             ? Number(a.id) - Number(b.id) : a.id.localeCompare(b.id));
@@ -403,51 +425,14 @@ export default function Obracun() {
       const todayRef = child(obracunRestoran(), dateIsoKey);
       const todaySnap = await withTimeout(get(todayRef), 6000, "Provjera dnevnog obračuna");
       if (!todaySnap.exists()) {
-        const allObracunSnap = await withTimeout(get(obracunRestoran()), 6000, "Učitavanje starih obračuna");
-        let yesterdayItems = null;
-        if (allObracunSnap.exists()) {
-          const keys = Object.keys(allObracunSnap.val() || {}).filter((k) => k < dateIsoKey).sort();
-          if (keys.length > 0) {
-            const lastKey = keys[keys.length - 1];
-            yesterdayItems = allObracunSnap.child(lastKey).child("artikli").val() || null;
-          }
-        }
-
-        const snapshotItems = {};
-        currentDrinkSnapshots.forEach(([id, snap], idx) => {
-          const name = String(snap.child("name").val() || id);
-          const st = number(snap.child(N.MENU_STANJE).val());
-          const cijena = number(snap.child("price").val() || snap.child("cijena").val() || 0);
-          let prev = st;
-          if (yesterdayItems && yesterdayItems[id]) {
-            const yObj = yesterdayItems[id];
-            prev = number(yObj.ostalo ?? yObj.stanje ?? st);
-          }
-
-          snapshotItems[id] = {
-            redni_broj: String(idx + 1),
-            naziv: name,
-            jedinica_mjere: "",
-            stanje_prethodno: prev,
-            novo: st,
-            ubaceno: 0,
-            ukupno: st,
-            kolicina: 0,
-            cijena: cijena,
-            vrijednost: 0,
-            ostalo: st,
-            stanje: st,
-          };
-        });
-
         const obracunPath = `${N.ROOT_RESTORAN}/${N.OBRACUN}/${dateIsoKey}`;
         updatesMap[`${obracunPath}/datum`] = dateFormatted;
         updatesMap[`${obracunPath}/vrijeme`] = timeFormatted;
         updatesMap[`${obracunPath}/timestamp`] = Date.now();
         updatesMap[`${obracunPath}/sacuvao`] = user?.ime || user?.name || "Sistem";
-        updatesMap[`${obracunPath}/artikli`] = snapshotItems;
 
         // Auto-purge older than 30 days
+        const allObracunSnap = await withTimeout(get(obracunRestoran()), 6000, "Učitavanje starih obračuna");
         if (allObracunSnap.exists()) {
           const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
           allObracunSnap.forEach((childSnap) => {
@@ -572,6 +557,42 @@ export default function Obracun() {
 
       // Check and record daily snapshot if needed (Option A)
       await recordDailySnapshotIfNeeded(stockSnapshots, updates);
+
+      // Ažuriraj i dnevni obračun za danas tako da odmah zabilježi dodavanje / izmjenu
+      try {
+        const { dateIsoKey } = currentKeys();
+        const obracunArtikliPath = `${N.ROOT_RESTORAN}/${N.OBRACUN}/${dateIsoKey}/artikli`;
+        quantities.forEach((item) => {
+          const snapshotEntry = stockSnapshots.find((s) => s[0] === item.itemId);
+          const currentStock = snapshotEntry ? number(snapshotEntry[1].child(N.MENU_STANJE).val()) : 0;
+          if (mode === "set") {
+            const target = item.targetStock ?? 0;
+            updates[`${obracunArtikliPath}/${item.itemId}/novo`] = target;
+            updates[`${obracunArtikliPath}/${item.itemId}/ostalo`] = target;
+            updates[`${obracunArtikliPath}/${item.itemId}/stanje`] = target;
+          } else {
+            const addAmount = item.amount || 0;
+            const targetArtikal = dailyReport?.artikli?.[item.itemId];
+            const prevNovo = targetArtikal?.novo !== undefined ? number(targetArtikal.novo) : currentStock;
+            const prevUbaceno = targetArtikal?.ubaceno !== undefined ? number(targetArtikal.ubaceno) : 0;
+            const prevUkupno = targetArtikal?.ukupno !== undefined ? number(targetArtikal.ukupno) : currentStock;
+            const prevOstalo = targetArtikal?.ostalo !== undefined ? number(targetArtikal.ostalo) : currentStock;
+
+            const calcNovo = Math.round((prevNovo + addAmount) * 100) / 100;
+            const calcUbaceno = Math.round((prevUbaceno + addAmount) * 100) / 100;
+            const calcUkupno = Math.round((prevUkupno + addAmount) * 100) / 100;
+            const calcOstalo = Math.round((prevOstalo + addAmount) * 100) / 100;
+
+            updates[`${obracunArtikliPath}/${item.itemId}/novo`] = calcNovo;
+            updates[`${obracunArtikliPath}/${item.itemId}/ubaceno`] = calcUbaceno;
+            updates[`${obracunArtikliPath}/${item.itemId}/ukupno`] = calcUkupno;
+            updates[`${obracunArtikliPath}/${item.itemId}/ostalo`] = calcOstalo;
+            updates[`${obracunArtikliPath}/${item.itemId}/stanje`] = calcNovo;
+          }
+        });
+      } catch (err) {
+        console.warn("OBRACUN_LIVE_ENTRY_UPDATE_FAILED", err);
+      }
 
       // Atomic release of GlobalLock and clearing lease inside the same update
       updates[globalLockPath()] = "False";
@@ -861,23 +882,68 @@ export default function Obracun() {
   // 30-day accounting list
   const dailyObracunDates = Object.keys(dailyObracunHistory).sort((a, b) => b.localeCompare(a));
   const currentDailyRecord = selectedDailyDate ? dailyObracunHistory[selectedDailyDate] : null;
-  const currentDailyItems = currentDailyRecord?.artikli
-    ? Object.entries(currentDailyRecord.artikli).map(([id, d], idx) => ({
-        id,
-        redni_broj: d.redni_broj || String(idx + 1),
-        naziv: d.naziv || id,
-        jedinica_mjere: d.jedinica_mjere || "",
-        stanje_prethodno: number(d.stanje_prethodno ?? d.ostalo ?? d.stanje ?? 0),
-        novo: number(d.novo ?? d.stanje ?? d.ostalo ?? 0),
-        ubaceno: number(d.ubaceno ?? 0),
-        ukupno: number(d.ukupno ?? d.stanje ?? d.ostalo ?? 0),
-        kolicina: number(d.kolicina ?? 0),
-        cijena: number(d.cijena ?? 0),
-        vrijednost: number(d.vrijednost ?? 0),
-        ostalo: number(d.ostalo ?? d.stanje ?? d.novo ?? 0),
-        stock: number(d.stanje ?? d.ostalo ?? 0),
-      }))
-    : [];
+  const currentDailyItems = useMemo(() => {
+    if (!selectedDailyDate) return [];
+    const recordArtikli = currentDailyRecord?.artikli || {};
+    // Prikazujemo sve artikle iz menija koji postoje ili koji su bili u obračunu
+    const allIds = Array.from(new Set([
+      ...menuStockItems.map((m) => m.id),
+      ...Object.keys(recordArtikli)
+    ]));
+    allIds.sort((a, b) => /^\d+$/.test(a) && /^\d+$/.test(b) ? Number(a) - Number(b) : a.localeCompare(b));
+
+    return allIds.map((id, idx) => {
+      const d = recordArtikli[id];
+      const menuItem = menuStockItems.find((m) => m.id === id);
+      const name = d?.naziv || menuItem?.name || id;
+      const currentStock = menuItem ? menuItem.stock : 0;
+
+      if (d) {
+        const p = number(d.stanje_prethodno !== undefined ? d.stanje_prethodno : (d.ostalo ?? d.stanje ?? currentStock));
+        const u = number(d.ubaceno ?? 0);
+        const k = number(d.kolicina ?? 0);
+        const cijena = number(d.cijena ?? menuItem?.price ?? 0);
+        const calculatedUkupno = d.ukupno !== undefined ? number(d.ukupno) : (p + u);
+        const calculatedNovo = d.novo !== undefined ? number(d.novo) : (calculatedUkupno - k);
+        const calculatedOstalo = d.ostalo !== undefined ? number(d.ostalo) : calculatedNovo;
+        const calculatedVrijednost = d.vrijednost !== undefined ? number(d.vrijednost) : Math.round(k * cijena * 100) / 100;
+
+        return {
+          id,
+          redni_broj: d.redni_broj || String(idx + 1),
+          naziv: name,
+          jedinica_mjere: d.jedinica_mjere || "",
+          stanje_prethodno: p,
+          novo: calculatedNovo,
+          ubaceno: u,
+          ukupno: calculatedUkupno,
+          kolicina: k,
+          cijena: cijena,
+          vrijednost: calculatedVrijednost,
+          ostalo: calculatedOstalo,
+          stock: calculatedOstalo,
+        };
+      } else {
+        // Artikal nije mijenjan tog dana -> stanje_prethodno = trenutno stanje, ostalo = trenutno stanje, nema prodaje i ubacivanja
+        const price = menuItem ? menuItem.price : 0;
+        return {
+          id,
+          redni_broj: String(idx + 1),
+          naziv: name,
+          jedinica_mjere: "",
+          stanje_prethodno: currentStock,
+          novo: currentStock,
+          ubaceno: 0,
+          ukupno: currentStock,
+          kolicina: 0,
+          cijena: price,
+          vrijednost: 0,
+          ostalo: currentStock,
+          stock: currentStock,
+        };
+      }
+    });
+  }, [selectedDailyDate, currentDailyRecord, menuStockItems]);
 
   return <main style={pageStyle}>
     <div style={{ maxWidth: 1280, width: "100%", margin: "0 auto" }}>
@@ -923,73 +989,74 @@ export default function Obracun() {
               <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Izmijeni trenutno stanje artikala</span>
             </div>
 
-            {/* Red 3: ŠTAMPAJ PDF */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button
-                type="button"
-                style={{ ...buttonStyle, width: 140, background: "#334155", borderColor: "#334155", color: "white", padding: "9px 16px" }}
-                disabled={!menuStockItems.length}
-                onClick={() => downloadBeverageStockPdf(menuStockItems)}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7"></path><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
-                ŠTAMPAJ PDF
-              </button>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Sačuvaj trenutno stanje u pdf</span>
-            </div>
           </div>
         </div>
 
         {/* 30-Day History Bar */}
-        <div style={{ marginTop: 14, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", background: "#f8fafc", padding: "10px 14px", borderRadius: 12, border: "1px solid #e2e8f0" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Istorija obračuna (30 dana):</span>
-            {dailyObracunDates.length > 0 ? (
-              <select
-                aria-label="Izaberi dan obračuna"
-                style={{ ...inputStyle, width: "auto", minWidth: 150, padding: "6px 10px", fontSize: 13 }}
-                value={selectedDailyDate}
-                onChange={(e) => setSelectedDailyDate(e.target.value)}
-              >
-                {dailyObracunDates.map((d) => (
-                  <option key={d} value={d}>
-                    {dailyObracunHistory[d]?.datum || d}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <span style={{ fontSize: 12.5, color: "#94a3b8" }}>Još nema sačuvanih dana.</span>
+        <div style={{ marginTop: 14, marginBottom: 14, background: "#f8fafc", padding: "12px 16px", borderRadius: 12, border: "1px solid #cbd5e1" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14, fontWeight: 800, color: "#1e293b" }}>Istorija obračuna:</span>
+              {dailyObracunDates.length > 0 ? (
+                <select
+                  aria-label="Izaberi datum sačuvanih obračuna"
+                  style={{ ...inputStyle, width: "auto", minWidth: 160, padding: "7px 12px", fontSize: 13.5, fontWeight: 700 }}
+                  value={selectedDailyDate}
+                  onChange={(e) => {
+                    setSelectedDailyDate(e.target.value);
+                    setShowDailyHistory(true);
+                  }}
+                >
+                  {dailyObracunDates.map((d) => (
+                    <option key={d} value={d}>
+                      {dailyObracunHistory[d]?.datum || d}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span style={{ fontSize: 13, color: "#94a3b8" }}>Još nema sačuvanih obračuna.</span>
+              )}
+            </div>
+            {selectedDailyDate && currentDailyRecord && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5, color: "#64748b" }}>Zabilježeno: <strong>{currentDailyRecord.vrijeme}</strong> ({currentDailyRecord.sacuvao || "Sistem"})</span>
+                <button
+                  type="button"
+                  style={{ ...buttonStyle, padding: "6px 12px", fontSize: 12.5 }}
+                  onClick={() => downloadPdfFile(`Obračun stanja - ${currentDailyRecord.datum}`, `${currentDailyRecord.datum} ${currentDailyRecord.vrijeme || ""}`, currentDailyItems, null, `Obracun_${selectedDailyDate}`, currentDailyRecord.sacuvao || "Sistem")}
+                >
+                  Štampaj dan (PDF)
+                </button>
+                <button
+                  type="button"
+                  style={{ ...buttonStyle, background: showDailyHistory ? "#b91c1c" : "#0284c7", color: "white", borderColor: showDailyHistory ? "#b91c1c" : "#0284c7", padding: "6px 12px", fontSize: 12.5 }}
+                  onClick={() => setShowDailyHistory((prev) => !prev)}
+                >
+                  {showDailyHistory ? "Zatvori tabelu" : "Prikaži tabelu"}
+                </button>
+              </div>
             )}
           </div>
-          {selectedDailyDate && currentDailyRecord && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12.5, color: "#64748b" }}>Zabilježeno: {currentDailyRecord.vrijeme} ({currentDailyRecord.sacuvao || "Sistem"})</span>
-              <button
-                type="button"
-                style={{ ...buttonStyle, padding: "5px 10px", fontSize: 12 }}
-                onClick={() => downloadPdfFile(`Obračun stanja - ${currentDailyRecord.datum}`, `${currentDailyRecord.datum} ${currentDailyRecord.vrijeme || ""}`, currentDailyItems, null, `Obracun_${selectedDailyDate}`, currentDailyRecord.sacuvao || "Sistem")}
-              >
-                Štampaj dan
-              </button>
-              <button
-                type="button"
-                style={{ ...buttonStyle, padding: "5px 10px", fontSize: 12, background: showDailyHistory ? "#e2e8f0" : "white" }}
-                onClick={() => setShowDailyHistory((v) => !v)}
-              >
-                {showDailyHistory ? "Sakrij tabelu dana" : "Prikaži tabelu dana"}
-              </button>
-            </div>
-          )}
         </div>
 
-        {/* Selected Daily History Table View - Identical to Istorija Obracuna table */}
-        {showDailyHistory && selectedDailyDate && currentDailyRecord && (
-          <div style={{ marginBottom: 18, border: "1px solid #cbd5e1", borderRadius: 12, overflow: "hidden", background: "#f8fafc", padding: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        {/* Selected Daily History Table View - Identical to Istorija Obracuna table, displayed directly underneath */}
+        {selectedDailyDate && currentDailyRecord && showDailyHistory && (
+          <div style={{ marginBottom: 20, border: "1px solid #cbd5e1", borderRadius: 12, overflow: "hidden", background: "#f8fafc", padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div>
-                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#1e293b" }}>Istorijski obračun za dan: {currentDailyRecord.datum} ({currentDailyRecord.vrijeme})</h3>
-                <span style={{ fontSize: 12, color: "#64748b" }}>Zabilježio: <strong>{currentDailyRecord.sacuvao || "Sistem"}</strong></span>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#1e293b" }}>Obračun za dan: {currentDailyRecord.datum} ({currentDailyRecord.vrijeme})</h3>
+                <span style={{ fontSize: 12.5, color: "#64748b" }}>Sačuvao: <strong>{currentDailyRecord.sacuvao || "Sistem"}</strong></span>
               </div>
-              <span style={{ fontSize: 12, color: "#64748b" }}>Broj stavki: {currentDailyItems.length}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 12.5, color: "#64748b" }}>Broj stavki: <strong>{currentDailyItems.length}</strong></span>
+                <button
+                  type="button"
+                  style={{ ...buttonStyle, background: "#b91c1c", color: "white", borderColor: "#b91c1c", padding: "4px 10px", fontSize: 12 }}
+                  onClick={() => setShowDailyHistory(false)}
+                >
+                  Zatvori tabelu
+                </button>
+              </div>
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "auto" }}>
@@ -1016,7 +1083,26 @@ export default function Obracun() {
           </div>
         )}
 
+        {/* Red: ŠTAMPAJ PDF (Odmah povise Trenutno stanje artikala) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, marginBottom: 12 }}>
+          <button
+            type="button"
+            style={{ ...buttonStyle, width: 140, background: "#334155", borderColor: "#334155", color: "white", padding: "9px 16px" }}
+            disabled={!menuStockItems.length}
+            onClick={() => downloadBeverageStockPdf(menuStockItems)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7"></path><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+            ŠTAMPAJ PDF
+          </button>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Sačuvaj trenutno stanje u pdf</span>
+        </div>
+
         {/* Live Table */}
+        <div style={{ marginTop: 8, marginBottom: 8 }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#000000" }}>
+            Trenutno stanje artikala
+          </h2>
+        </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", minWidth: 0, borderCollapse: "collapse", tableLayout: "fixed" }}>
             <thead>

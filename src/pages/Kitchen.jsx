@@ -866,12 +866,31 @@ const getWaitMinutes = (order, nowTs) => {
         }
       });
       const drinksMenuRef = child(menuRestoran(), "Podaci1");
+      const isoDateKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      const obracunDayRef = child(child(rootRestoran(), N.OBRACUN), isoDateKey);
+
       const stockReadsPromise = Promise.all([...stockDeductions.keys()].map(async (itemId) => {
         const itemSnapshot = await get(child(drinksMenuRef, itemId));
         if (!itemSnapshot.exists()) return null;
         const currentStock = Number(String(itemSnapshot.child("stanje").val() ?? "0").replace(",", "."));
         const safeStock = Number.isFinite(currentStock) ? currentStock : 0;
-        return [itemId, safeStock - stockDeductions.get(itemId)];
+        const name = itemSnapshot.child("name").val() || itemId;
+        const price = Number(String(itemSnapshot.child("price").val() || itemSnapshot.child("cijena").val() || "0").replace(",", ".")) || 0;
+        const obracunItemSnap = await get(child(child(obracunDayRef, "artikli"), itemId));
+        const prevSold = Number(obracunItemSnap.val()?.kolicina) || 0;
+        const prevUbaceno = Number(obracunItemSnap.val()?.ubaceno) || 0;
+        const prevStanjePrethodno = obracunItemSnap.val()?.stanje_prethodno !== undefined ? Number(obracunItemSnap.val()?.stanje_prethodno) : safeStock;
+        return {
+          itemId,
+          currentStock: safeStock,
+          remaining: safeStock - stockDeductions.get(itemId),
+          soldNow: stockDeductions.get(itemId),
+          name,
+          price,
+          prevSold,
+          prevUbaceno,
+          stanjePrethodno: prevStanjePrethodno,
+        };
       }));
       const [totalRestSnap, firstSnap, secondSnap, waiterSnap, monthSnap, stockReads] = await Promise.all([
         get(totalRestoranRef()), get(totalPrvaRef()), get(totalDrugaRef()),
@@ -912,9 +931,38 @@ const getWaitMinutes = (order, nowTs) => {
         [`${N.TOTAL_PRICE_RESTORAN}/${N.GLOBAL_LOCK}`]: "False",
         [`${N.TOTAL_PRICE_RESTORAN}/GlobalLockUpdatedAt`]: null,
       };
-      stockReads.filter(Boolean).forEach(([itemId, quantity]) => {
-        updates[`${N.MENU_RESTORAN}/Podaci1/${itemId}/stanje`] = quantity;
+      stockReads.filter(Boolean).forEach((entry) => {
+        updates[`${N.MENU_RESTORAN}/Podaci1/${entry.itemId}/stanje`] = entry.remaining;
       });
+
+      // Zabilježi prodato u dnevni obračun (Obracun/{dateIsoKey}/artikli/{itemId})
+      try {
+        const obracunArtikliPath = `${N.ROOT_RESTORAN}/${N.OBRACUN}/${isoDateKey}/artikli`;
+        const obracunMetaPath = `${N.ROOT_RESTORAN}/${N.OBRACUN}/${isoDateKey}`;
+        updates[`${obracunMetaPath}/datum`] = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear()}`;
+        updates[`${obracunMetaPath}/vrijeme`] = `${pad(hour)}:${pad(now.getMinutes())}`;
+        updates[`${obracunMetaPath}/timestamp`] = Date.now();
+        updates[`${obracunMetaPath}/sacuvao`] = "Sistem";
+
+        stockReads.filter(Boolean).forEach((entry) => {
+          const totalSold = Math.round((entry.prevSold + entry.soldNow) * 100) / 100;
+          const ukupno = Math.round((entry.stanjePrethodno + entry.prevUbaceno) * 100) / 100;
+          const vrijednost = Math.round((totalSold * entry.price) * 100) / 100;
+
+          updates[`${obracunArtikliPath}/${entry.itemId}/naziv`] = entry.name;
+          updates[`${obracunArtikliPath}/${entry.itemId}/stanje_prethodno`] = entry.stanjePrethodno;
+          updates[`${obracunArtikliPath}/${entry.itemId}/ubaceno`] = entry.prevUbaceno;
+          updates[`${obracunArtikliPath}/${entry.itemId}/ukupno`] = ukupno;
+          updates[`${obracunArtikliPath}/${entry.itemId}/kolicina`] = totalSold;
+          updates[`${obracunArtikliPath}/${entry.itemId}/cijena`] = entry.price;
+          updates[`${obracunArtikliPath}/${entry.itemId}/vrijednost`] = vrijednost;
+          updates[`${obracunArtikliPath}/${entry.itemId}/novo`] = entry.remaining;
+          updates[`${obracunArtikliPath}/${entry.itemId}/ostalo`] = entry.remaining;
+          updates[`${obracunArtikliPath}/${entry.itemId}/stanje`] = entry.remaining;
+        });
+      } catch (obracunErr) {
+        console.warn("OBRACUN_DAILY_DEDUCT_PREP_ERROR", obracunErr);
+      }
       await update(rootRestoran(), updates);
       locksReleasedByCommit = true;
       sendPushNotification(
